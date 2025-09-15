@@ -1,0 +1,34 @@
+name: Build BiS feed
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # cada 6 horas
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm i node-fetch@3
+      - name: Update bis-feed.js
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          REGION: us
+          LOCALE: es_MX
+          SEASON_LABEL: "TWW S3"
+          RAID_ZONE_ID: '44'   # Manaforge
+        run: node scripts/update-bis.js
+      - name: Commit feed
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            git config user.name "actions"; git config user.email "actions@github.com";
+            git add bis-feed.js;
+            git commit -m "Auto-update bis-feed.js";
+            git push;
+          fi
