@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BiS por clase/especialización — Auto</title>
+  <!-- Wowhead tooltips: íconos + tooltip automáticos para [item=ID] o enlaces a Wowhead -->
+  <script>const whTooltips = { colorLinks: true, iconizeLinks: true, renameLinks: true };</script>
+  <script src="https://wow.zamimg.com/widgets/power.js"></script>
+  <style>
+    :root{ --bg:#0b0e14; --card:#11151c; --muted:#8aa1b1; --text:#e6eef4; --accent:#7cd3ff; --pill:#1a2330; }
+    *{ box-sizing:border-box }
+    html,body{ height:100% }
+    body{ margin:0; font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial; color:var(--text); background:linear-gradient(180deg,#0b0e14,#0b0e14 160px,#0d1117); }
+    header{ position:sticky; top:0; z-index:10; background:rgba(11,14,20,.9); backdrop-filter:saturate(140%) blur(8px); border-bottom:1px solid #1e2633; }
+    .wrap{ max-width:1100px; margin:0 auto; padding:18px 20px; }
+    h1{ font-size:22px; margin:0 0 6px; letter-spacing:.2px }
+    .muted{ color:var(--muted); font-size:13px }
+    .bar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px }
+    select, button{ appearance:none; background:#0f141c; border:1px solid #273141; color:var(--text); padding:10px 12px; border-radius:10px; font-size:14px }
+    button{ cursor:pointer }
+    main{ max-width:1100px; margin:18px auto; padding:0 20px; }
+    .grid{ display:grid; grid-template-columns: 1fr; gap:14px }
+    @media (min-width:740px){ .grid{ grid-template-columns: 1fr 1fr } }
+    .card{ background:var(--card); border:1px solid #1c2431; border-radius:14px; padding:14px; box-shadow:0 6px 18px rgba(0,0,0,.25) }
+    .slot{ font-weight:700; margin-bottom:8px; font-size:14px; color:#b9d3e4 }
+    .row{ display:grid; grid-template-columns: 56px 1fr; gap:12px; align-items:center }
+    .item{ display:flex; flex-direction:column; gap:6px }
+    .item a{ text-decoration:none; font-weight:600 }
+    .pills{ display:flex; gap:8px; flex-wrap:wrap }
+    .pill{ background:var(--pill); border:1px solid #293548; color:#bfe6ff; font-size:12px; padding:6px 8px; border-radius:999px }
+    .empty{ color:var(--muted); font-style:italic }
+    footer{ color:var(--muted); text-align:center; font-size:12px; padding:26px 0 40px }
+    .controls{ display:flex; gap:8px; flex-wrap:wrap }
+    .tag{ padding:8px 10px; border-radius:999px; border:1px solid #273141; background:#0f141c; font-size:12px; cursor:pointer; user-select:none }
+    .tag.active{ border-color:#3b8ab8; box-shadow:0 0 0 2px rgba(60,140,190,.25) inset }
+    .warn{ background:#201c00; border:1px solid #534400; color:#ffec8b; padding:10px 12px; border-radius:10px; font-size:13px; margin-top:6px }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>BiS por clase/especialización — Auto</h1>
+      <div class="muted">The War Within — sin backend; se actualiza leyendo <code>bis-feed.js</code> (generado automáticamente).</div>
+      <div class="bar">
+        <select id="classSelect" aria-label="Elegí clase"></select>
+        <select id="specSelect" aria-label="Elegí especialización"></select>
+        <div class="controls" id="filters">
+          <span class="tag" data-filter="all">Todo</span>
+          <span class="tag" data-filter="raid">Raid</span>
+          <span class="tag" data-filter="mplus">Míticas+</span>
+          <span class="tag" data-filter="crafted">Crafteo</span>
+        </div>
+        <button id="refresh">Recargar</button>
+        <span class="muted" id="meta"></span>
+      </div>
+      <div class="warn" id="note">
+        Si no ves datos, todavía no se generó <code>bis-feed.js</code>. Subí este repo a GitHub, activá Pages y el Action lo va a crear solo.
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="grid" id="slots"></div>
+  </main>
+
+  <footer>
+    <div>Tooltips por Wowhead. Esta página es un único archivo HTML + <code>bis-feed.js</code> generado por GitHub Actions.</div>
+  </footer>
+
+<script>
+// Carga el feed si existe; si no, muestra demo mínima (opcional)
+const FEED_URL = './bis-feed.js';
+let DATA = null;
+
+function el(tag, attrs={}, children=[]){
+  const n = document.createElement(tag);
+  Object.entries(attrs).forEach(([k,v]) => { if(k==='class') n.className=v; else if(k==='html') n.innerHTML=v; else n.setAttribute(k,v); });
+  (Array.isArray(children)?children:[children]).filter(Boolean).forEach(c=> n.appendChild(typeof c==='string'? document.createTextNode(c): c));
+  return n;
+}
+
+const SLOT_ORDER = ['head','neck','shoulder','back','chest','wrist','hands','waist','legs','feet','ring1','ring2','trinket1','trinket2','weaponMain','weaponOff','twoHand'];
+const SLOT_LABEL = {
+  head:'Cabeza', neck:'Collar', shoulder:'Hombros', back:'Capa', chest:'Pecho', wrist:'Muñecas', hands:'Manos', waist:'Cintura', legs:'Piernas', feet:'Pies',
+  ring1:'Anillo 1', ring2:'Anillo 2', trinket1:'Abalorio 1', trinket2:'Abalorio 2', weaponMain:'Arma principal', weaponOff:'Arma secundaria', twoHand:'Arma de dos manos'
+};
+
+let currentClass=null, currentSpec=null, activeFilter='all';
+
+function srcPills(src){
+  if(!src) return [];
+  if(src.type==='raid')   return [ el('span',{class:'pill'}, `${src.instance}${src.boss? ' — '+src.boss:''}`) ];
+  if(src.type==='mplus')  return [ el('span',{class:'pill'}, src.dungeon||'Míticas+') ];
+  if(src.type==='crafted')return [ el('span',{class:'pill'}, src.profession? 'Crafteo — '+src.profession : 'Crafteo') ];
+  return [ el('span',{class:'pill'}, 'Otro') ];
+}
+
+function buildSelects(){
+  const classSel=document.getElementById('classSelect');
+  const specSel=document.getElementById('specSelect');
+  classSel.innerHTML=''; specSel.innerHTML='';
+
+  const classes = Object.keys(DATA.data).sort();
+  classes.forEach(c=>{
+    const label = (DATA.labels && DATA.labels[c] && DATA.labels[c].label) || c;
+    classSel.appendChild(el('option',{value:c}, label));
+  });
+
+  currentClass = localStorage.getItem('bis_class') && DATA.data[localStorage.getItem('bis_class')] ? localStorage.getItem('bis_class') : classes[0];
+  classSel.value = currentClass;
+
+  function fillSpec(){
+    specSel.innerHTML='';
+    const specKeys = Object.keys(DATA.data[currentClass]).sort();
+    specKeys.forEach(s=>{
+      const label = (DATA.labels && DATA.labels[currentClass] && DATA.labels[currentClass].specs && DATA.labels[currentClass].specs[s]) || s;
+      specSel.appendChild(el('option',{value:s}, label));
+    });
+    currentSpec = localStorage.getItem('bis_spec') && DATA.data[currentClass][localStorage.getItem('bis_spec')] ? localStorage.getItem('bis_spec') : specKeys[0];
+    specSel.value=currentSpec;
+  }
+
+  classSel.addEventListener('change', ()=>{ currentClass=classSel.value; fillSpec(); render(); saveState(); });
+  specSel.addEventListener('change',  ()=>{ currentSpec=specSel.value; render(); saveState(); });
+
+  fillSpec();
+}
+
+function render(){
+  const grid=document.getElementById('slots'); grid.innerHTML='';
+  const items = (DATA.data[currentClass] && DATA.data[currentClass][currentSpec]) || [];
+  const bySlot={}; for(const it of items){ (bySlot[it.slot]=bySlot[it.slot]||[]).push(it); }
+
+  SLOT_ORDER.forEach(slot=>{
+    const card=el('div',{class:'card'});
+    card.appendChild(el('div',{class:'slot'}, SLOT_LABEL[slot]||slot));
+    const arr=(bySlot[slot]||[]).filter(it=> activeFilter==='all' ? true : (it.source && it.source.type===activeFilter));
+    if(!arr.length){ card.appendChild(el('div',{class:'empty'}, '—')); grid.appendChild(card); return; }
+    arr.forEach(it=>{
+      const row=el('div',{class:'row'});
+      const link=el('a',{href:`https://www.wowhead.com/item=${it.id}`, target:'_blank', html:`[item=${it.id}]`});
+      row.appendChild(el('div',{html:'&nbsp;'}));
+      row.appendChild(el('div',{class:'item'}, [link, el('div',{class:'pills'}, srcPills(it.source)) ]));
+      card.appendChild(row);
+    });
+    grid.appendChild(card);
+  });
+
+  if(window.$WowheadPower){ $WowheadPower.refreshLinks(); }
+  document.getElementById('meta').textContent = `Temporada: ${DATA.meta.season||''} · Actualizado: ${DATA.meta.updated||''}`;
+}
+
+function bindFilters(){
+  const box=document.getElementById('filters');
+  const tags=box.querySelectorAll('.tag');
+  const set=f=>{ activeFilter=f; tags.forEach(t=> t.classList.toggle('active', t.dataset.filter===f)); render(); };
+  tags.forEach(t=> t.addEventListener('click', ()=> set(t.dataset.filter)));
+  set('all');
+}
+
+function saveState(){ localStorage.setItem('bis_class', currentClass); localStorage.setItem('bis_spec', currentSpec); }
+
+function loadFeed(){
+  return new Promise(resolve=>{
+    const s=document.createElement('script');
+    s.src=FEED_URL+'?t='+(Date.now());
+    s.onload=()=> resolve(Boolean(window.BIS_FEED && window.BIS_FEED.data));
+    s.onerror=()=> resolve(false);
+    document.head.appendChild(s);
+  });
+}
+
+(async function init(){
+  bindFilters();
+  document.getElementById('refresh').addEventListener('click', ()=> location.reload() );
+  const ok = await loadFeed();
+  if(!ok){
+    // Demo mínima si no hay feed aún
+    window.BIS_FEED = {
+      meta:{ season:'TWW S3 (demo)', updated:'local' },
+      labels:{ Warrior:{label:'Guerrero', specs:{ Fury:'Furia' } }, Hunter:{label:'Cazador', specs:{ Marksmanship:'Puntería' } } },
+      data:{
+        Warrior:{ Fury:[ {slot:'twoHand',id:19019,source:{type:'raid',instance:'Ejemplo',boss:'Jefe A'}}, {slot:'trinket1',id:211515,source:{type:'mplus',dungeon:'Mazmorra X'}}, {slot:'trinket2',id:204202,source:{type:'crafted',profession:'Joyería'}} ] },
+        Hunter:{ Marksmanship:[ {slot:'twoHand',id:34334,source:{type:'raid',instance:'Ejemplo',boss:'Jefe B'}}, {slot:'trinket1',id:110004,source:{type:'mplus',dungeon:'Mazmorra Y'}}, {slot:'ring1',id:178871,source:{type:'crafted',profession:'Joyería'}} ] }
+      }
+    };
+  }
+  DATA = window.BIS_FEED;
+  document.getElementById('note').style.display = ok ? 'none' : 'block';
+  buildSelects();
+  render();
+})();
+</script>
+</body>
+</html>
