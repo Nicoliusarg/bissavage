@@ -1,9 +1,4 @@
-// scripts/update-bis.js
-// Genera bis-feed.js con window.BIS_FEED = {...} usando Warcraft Logs (popularidad, top parses)
-// y mapea origen (Raid / M+ / Crafteo) con Blizzard Journal.
-// Requiere Node 18+ y node-fetch@3 (el workflow ya lo instala).
-// ⚠️ Asegurate que el workflow cree un package.json con {"type":"module"} para usar "import".
-
+// scripts/update-bis.js (v2: rankings por ENCOUNTER)
 import fs from "fs";
 import fetch from "node-fetch";
 
@@ -15,21 +10,139 @@ const {
   REGION = "us",
   LOCALE = "es_MX",
   SEASON_LABEL = "TWW S3",
-  RAID_ZONE_ID = "44", // Manaforge por defecto (cambiá si querés otra raid)
+  RAID_ZONE_ID = "44", // Manaforge Omega
 } = process.env;
 
-if (
-  !WCL_CLIENT_ID ||
-  !WCL_CLIENT_SECRET ||
-  !BLIZZARD_CLIENT_ID ||
-  !BLIZZARD_CLIENT_SECRET
-) {
+if (!WCL_CLIENT_ID || !WCL_CLIENT_SECRET || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
   console.error("Faltan secrets de API (WCL o Blizzard).");
   process.exit(1);
 }
 
-// ————————————————————————————————————————————————
-// 🗂️ Todas las clases/specs (con rol para elegir métrica WCL)
+// --------------------- Auth ---------------------
+async function getTokenWCL() {
+  const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: WCL_CLIENT_ID,
+      client_secret: WCL_CLIENT_SECRET,
+    }),
+  });
+  if (!r.ok) throw new Error("WCL token error " + r.status);
+  return (await r.json()).access_token;
+}
+async function getTokenBlizzard() {
+  const r = await fetch("https://oauth.battle.net/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: BLIZZARD_CLIENT_ID,
+      client_secret: BLIZZARD_CLIENT_SECRET,
+    }),
+  });
+  if (!r.ok) throw new Error("BNet token error " + r.status);
+  return (await r.json()).access_token;
+}
+
+// --------------------- WCL GraphQL helpers ---------------------
+async function gqlWCL(query, variables, token) {
+  const r = await fetch("https://www.warcraftlogs.com/api/v2/client", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ query, variables }),
+  });
+  const j = await r.json();
+  if (j.errors) throw new Error(JSON.stringify(j.errors));
+  return j.data;
+}
+
+const Q_ZONE_ENCS = `
+query QZone($zone:Int!){
+  worldData { zone(id:$zone){ encounters { id name } } }
+}`;
+
+const Q_ENC_RANK = `
+query QEnc($enc:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $diff:Int!, $page:Int){
+  worldData {
+    encounter(id:$enc){
+      name
+      characterRankings(
+        className:$className, specName:$specName,
+        difficulty:$diff, metric:$metric, page:$page,
+        includeCombatantInfo:true
+      )
+    }
+  }
+}`;
+
+// --------------------- Blizzard Journal (mapping de origen) ---------------------
+const instanceIndexCache = { loaded: false, list: [] };
+const encounterItemsCache = new Map();
+const itemSourceCache = new Map();
+
+async function getInstances(blizzToken) {
+  if (instanceIndexCache.loaded) return instanceIndexCache.list;
+  const idx = await (await fetch(
+    `https://${REGION}.api.blizzard.com/data/wow/journal-instance/index?namespace=static-${REGION}&locale=${LOCALE}&access_token=${blizzToken}`
+  )).json();
+  instanceIndexCache.loaded = true;
+  instanceIndexCache.list = idx.instances || [];
+  return instanceIndexCache.list;
+}
+async function getEncounterItems(encHref, tok) {
+  if (encounterItemsCache.has(encHref)) return encounterItemsCache.get(encHref);
+  const enc = await (await fetch(`${encHref}&access_token=${tok}`)).json();
+  const ids = (enc.items || []).map(x => x?.item?.id).filter(Boolean);
+  const res = { ids, name: enc.name || "" };
+  encounterItemsCache.set(encHref, res);
+  return res;
+}
+async function mapSourceForItem(itemId, tok) {
+  if (itemSourceCache.has(itemId)) return itemSourceCache.get(itemId);
+  const insts = await getInstances(tok);
+  for (const inst of insts) {
+    try {
+      const instData = await (await fetch(`${inst.key.href}&access_token=${tok}`)).json();
+      const type = instData?.instance_type?.type;
+      if (!instData.encounters) continue;
+      for (const e of instData.encounters) {
+        const det = await getEncounterItems(e.key.href, tok);
+        if (det.ids.includes(itemId)) {
+          const src = type === "RAID"
+            ? { type: "raid", instance: instData.name, boss: det.name }
+            : type === "DUNGEON"
+            ? { type: "mplus", dungeon: instData.name }
+            : { type: "other" };
+          itemSourceCache.set(itemId, src);
+          return src;
+        }
+      }
+    } catch {}
+  }
+  // heurística de crafteo
+  try {
+    const it = await (await fetch(
+      `https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
+    )).json();
+    const crafted = it?.preview_item && (
+      it.preview_item.is_crafted ||
+      it.preview_item.crafted_quality ||
+      it.preview_item.crafting_reagent
+    );
+    if (crafted) {
+      const src = { type: "crafted" };
+      itemSourceCache.set(itemId, src);
+      return src;
+    }
+  } catch {}
+  const src = { type: "other" };
+  itemSourceCache.set(itemId, src);
+  return src;
+}
+
+// --------------------- Esquema clases/spec ---------------------
 const CLASSES = [
   { className: "Warrior", label: "Guerrero", specs: [
     { specName: "Arms", label: "Armas", role: "dps" },
@@ -98,233 +211,70 @@ const CLASSES = [
   ]},
 ];
 
-// ————————————————————————————————————————————————
-// 🔐 Tokens
-async function getTokenWCL() {
-  const res = await fetch("https://www.warcraftlogs.com/oauth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: WCL_CLIENT_ID,
-      client_secret: WCL_CLIENT_SECRET,
-    }),
-  });
-  if (!res.ok) throw new Error("WCL token error " + res.status);
-  return (await res.json()).access_token;
-}
-async function getTokenBlizzard() {
-  const res = await fetch("https://oauth.battle.net/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: BLIZZARD_CLIENT_ID,
-      client_secret: BLIZZARD_CLIENT_SECRET,
-    }),
-  });
-  if (!res.ok) throw new Error("BNet token error " + res.status);
-  return (await res.json()).access_token;
-}
-
-// ————————————————————————————————————————————————
-// 🧠 WCL GraphQL helper
-async function gqlWCL(query, variables, token) {
-  const res = await fetch("https://www.warcraftlogs.com/api/v2/client", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + token,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = await res.json();
-  if (json.errors) throw new Error(JSON.stringify(json.errors));
-  return json.data;
-}
-
-// Top rankings for a zone/spec to collect gear (difficulty Mythic=5)
-const QUERY_ZONE_RANKINGS = `
-query TopRankings($zone:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $page:Int){
-  worldData {
-    zone(id:$zone){
-      name
-      rankings(className:$className, specName:$specName, difficulty:5, metric:$metric, page:$page){
-        rankings { gear { id slot } }
-      }
-    }
-  }
-}`;
-
-// ————————————————————————————————————————————————
-// 📚 Blizzard Journal mapping (item -> origen)
-const instanceIndexCache = { loaded: false, list: [] };
-const encounterItemsCache = new Map();
-const itemSourceCache = new Map();
-
-async function getInstances(blizzToken) {
-  if (instanceIndexCache.loaded) return instanceIndexCache.list;
-  const idx = await (
-    await fetch(
-      `https://${REGION}.api.blizzard.com/data/wow/journal-instance/index?namespace=static-${REGION}&locale=${LOCALE}&access_token=${blizzToken}`
-    )
-  ).json();
-  instanceIndexCache.loaded = true;
-  instanceIndexCache.list = idx.instances || [];
-  return instanceIndexCache.list;
-}
-
-async function getEncounterItems(encounterHref, blizzToken) {
-  if (encounterItemsCache.has(encounterHref))
-    return encounterItemsCache.get(encounterHref);
-  const encData = await (
-    await fetch(`${encounterHref}&access_token=${blizzToken}`)
-  ).json();
-  const ids = (encData.items || [])
-    .map((x) => x?.item?.id)
-    .filter(Boolean);
-  encounterItemsCache.set(encounterHref, { ids, name: encData.name || "" });
-  return encounterItemsCache.get(encounterHref);
-}
-
-async function mapSourceForItem(itemId, blizzToken) {
-  if (itemSourceCache.has(itemId)) return itemSourceCache.get(itemId);
-  // Buscar en RAIDs/Dungeons del Journal
-  const instances = await getInstances(blizzToken);
-  for (const inst of instances) {
-    try {
-      const instData = await (
-        await fetch(`${inst.key.href}&access_token=${blizzToken}`)
-      ).json();
-      const instType = instData?.instance_type?.type;
-      if (!instData.encounters) continue;
-      for (const enc of instData.encounters) {
-        const detail = await getEncounterItems(enc.key.href, blizzToken);
-        if (detail.ids.includes(itemId)) {
-          const src =
-            instType === "RAID"
-              ? { type: "raid", instance: instData.name, boss: detail.name }
-              : instType === "DUNGEON"
-              ? { type: "mplus", dungeon: instData.name }
-              : { type: "other" };
-          itemSourceCache.set(itemId, src);
-          return src;
-        }
-      }
-    } catch (e) {
-      /* ignorar y seguir */
-    }
-  }
-  // Heurística de crafteo
-  try {
-    const it = await (
-      await fetch(
-        `https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${blizzToken}`
-      )
-    ).json();
-    const crafted =
-      it?.preview_item &&
-      (it.preview_item.is_crafted ||
-        it.preview_item.crafted_quality ||
-        it.preview_item.crafting_reagent);
-    if (crafted) {
-      const src = { type: "crafted" };
-      itemSourceCache.set(itemId, src);
-      return src;
-    }
-  } catch (e) {}
-  const src = { type: "other" };
-  itemSourceCache.set(itemId, src);
-  return src;
-}
-
-// ————————————————————————————————————————————————
-// 🧮 Build BiS by popularity
-const SLOT_MAP = new Map(
-  Object.entries({
-    head: "head",
-    neck: "neck",
-    shoulder: "shoulder",
-    back: "back",
-    chest: "chest",
-    wrist: "wrist",
-    hands: "hands",
-    waist: "waist",
-    legs: "legs",
-    feet: "feet",
-    finger1: "ring1",
-    finger2: "ring2",
-    trinket1: "trinket1",
-    trinket2: "trinket2",
-    mainhand: "weaponMain",
-    offhand: "weaponOff",
-    twohand: "twoHand",
-  })
-);
-
+const SLOT_MAP = new Map(Object.entries({
+  head: "head", neck: "neck", shoulder: "shoulder", back: "back", chest: "chest",
+  wrist: "wrist", hands: "hands", waist: "waist", legs: "legs", feet: "feet",
+  finger1: "ring1", finger2: "ring2", trinket1: "trinket1", trinket2: "trinket2",
+  mainhand: "weaponMain", offhand: "weaponOff", twohand: "twoHand",
+}));
 const DESIRED_SLOTS = [
-  "head",
-  "neck",
-  "shoulder",
-  "back",
-  "chest",
-  "wrist",
-  "hands",
-  "waist",
-  "legs",
-  "feet",
-  "ring1",
-  "ring2",
-  "trinket1",
-  "trinket2",
-  "weaponMain",
-  "weaponOff",
-  "twoHand",
+  "head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet",
+  "ring1","ring2","trinket1","trinket2","weaponMain","weaponOff","twoHand",
 ];
 
-function metricForRole(role) {
-  return role === "healer" ? "hps" : "dps"; // tanks usan dps para simplificar
-}
+function metricForRole(role){ return role === "healer" ? "hps" : "dps"; }
 
+// Suma frecuencias de items para un spec recorriendo TODOS los bosses
 async function buildForSpec(wclTok, blizzTok, className, specName, metric) {
-  const freq = new Map();
+  // 1) lista de encounters del zone
+  const z = await gqlWCL(Q_ZONE_ENCS, { zone: Number(RAID_ZONE_ID) }, wclTok);
+  const encounters = z?.worldData?.zone?.encounters || [];
+  if (!encounters.length) return [];
 
-  for (const page of [1, 2, 3]) {
-    const data = await gqlWCL(
-      QUERY_ZONE_RANKINGS,
-      { zone: Number(RAID_ZONE_ID), className, specName, metric, page },
-      wclTok
-    );
-    const rankings = data?.worldData?.zone?.rankings?.rankings || [];
-    for (const r of rankings) {
-      for (const g of r.gear || []) {
-        const slotRaw = (g.slot || "").toString().toLowerCase();
-        const norm = SLOT_MAP.get(slotRaw);
-        if (!norm) continue;
-        const key = norm + ":" + g.id;
-        freq.set(key, (freq.get(key) || 0) + 1);
+  // probá primero Mítico (5), si no hay nada caé a Heroico (4)
+  for (const diff of [5, 4]) {
+    const freq = new Map();
+
+    for (const enc of encounters) {
+      // 2) paginá rankings por encounter
+      for (let page = 1; page <= 3; page++) {
+        const d = await gqlWCL(Q_ENC_RANK,
+          { enc: enc.id, className, specName, metric, diff, page }, wclTok);
+        const obj = d?.worldData?.encounter?.characterRankings;
+        const ranks = obj?.rankings || []; // GraphQL JSON scalar
+        for (const r of ranks) {
+          for (const g of (r.gear || [])) {
+            const slotRaw = String(g.slot || "").toLowerCase();
+            const norm = SLOT_MAP.get(slotRaw);
+            if (!norm) continue;
+            const key = norm + ":" + g.id;
+            freq.set(key, (freq.get(key) || 0) + 1);
+          }
+        }
+        // si esta página no devolvió nada, corta loop de páginas para este boss
+        if (!ranks.length) break;
       }
     }
+
+    // 3) elegí BiS por slot si hubo datos
+    const out = [];
+    for (const s of DESIRED_SLOTS) {
+      const best = [...freq.entries()]
+        .filter(([k]) => k.startsWith(s + ":"))
+        .sort((a, b) => b[1] - a[1])[0];
+      if (!best) continue;
+      const itemId = Number(best[0].split(":")[1]);
+      const source = await mapSourceForItem(itemId, blizzTok);
+      out.push({ slot: s, id: itemId, source });
+    }
+    if (out.length) return out; // listo para este spec
   }
 
-  const out = [];
-  for (const s of DESIRED_SLOTS) {
-    const best = [...freq.entries()]
-      .filter(([k]) => k.startsWith(s + ":"))
-      .sort((a, b) => b[1] - a[1])[0];
-    if (!best) continue;
-    const itemId = Number(best[0].split(":")[1]);
-    const source = await mapSourceForItem(itemId, blizzTok);
-    out.push({ slot: s, id: itemId, source });
-  }
-  return out;
+  return []; // sin datos en ninguna dificultad
 }
 
 async function main() {
-  const [wclTok, blizzTok] = await Promise.all([
-    getTokenWCL(),
-    getTokenBlizzard(),
-  ]);
+  const [wclTok, blizzTok] = await Promise.all([getTokenWCL(), getTokenBlizzard()]);
 
   const data = {};
   const labels = {};
@@ -335,35 +285,20 @@ async function main() {
 
     for (const sp of cl.specs) {
       labels[cl.className].specs[sp.specName] = sp.label;
-
       try {
-        const items = await buildForSpec(
-          wclTok,
-          blizzTok,
-          cl.className,
-          sp.specName,
-          metricForRole(sp.role)
-        );
+        const items = await buildForSpec(wclTok, blizzTok, cl.className, sp.specName, metricForRole(sp.role));
         data[cl.className][sp.specName] = items;
+        console.log(`OK ${cl.className} / ${sp.specName}: ${items.length} slots`);
       } catch (e) {
-        console.error("Error en", cl.className, sp.specName, e.message);
+        console.error(`Error ${cl.className} / ${sp.specName}:`, e.message);
         data[cl.className][sp.specName] = [];
       }
     }
   }
 
-  const out = {
-    meta: { season: SEASON_LABEL, updated: new Date().toISOString() },
-    labels,
-    data,
-  };
-
-  const js = "window.BIS_FEED = " + JSON.stringify(out, null, 2) + ";\n";
-  fs.writeFileSync("bis-feed.js", js);
+  const out = { meta: { season: SEASON_LABEL, updated: new Date().toISOString() }, labels, data };
+  fs.writeFileSync("bis-feed.js", "window.BIS_FEED = " + JSON.stringify(out, null, 2) + ";\n");
   console.log("bis-feed.js listo.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main().catch(e => { console.error(e); process.exit(1); });
