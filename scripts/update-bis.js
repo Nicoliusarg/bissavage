@@ -1,6 +1,13 @@
 // scripts/update-bis.js — BIS por clase/spec desde Murlok.io (M+) + origen con Blizzard
-// Requiere: BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET
-// Deps: node-fetch@3, cheerio@1
+// Requisitos:
+//   - Secrets: BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET
+//   - Deps: node-fetch@3, cheerio@1
+//
+// Flujo:
+//   1) Scrape de https://murlok.io/<class>/<spec>/m%2B → sección "Best-in-Slot Gear"
+//   2) Extraer IDs de Wowhead (maneja item%3D12345 y formatos comunes)
+//   3) Consultar Journal de Blizzard para marcar origen: raid/mplus/crafted/other
+//   4) Generar bis-feed.js con labels ES que tu index.html ya usa
 
 import fs from "fs";
 import fetch from "node-fetch";
@@ -51,9 +58,21 @@ const CLASSES = [
 
 // --------- Mapeo de slots
 const SLOT_CANON = {
-  "head":"head","neck":"neck","shoulder":"shoulder","back":"back","chest":"chest","wrist":"wrist","hands":"hands",
-  "waist":"waist","legs":"legs","feet":"feet","ring":"ring","trinket":"trinket","main hand":"weaponMain",
-  "off hand":"weaponOff","two-hand":"twoHand","two hand":"twoHand","one-hand":"weaponMain","one hand":"weaponMain",
+  "head":"head",
+  "neck":"neck",
+  "shoulder":"shoulder",
+  "back":"back","cloak":"back",
+  "chest":"chest",
+  "wrist":"wrist",
+  "hands":"hands","gloves":"hands",
+  "waist":"waist","belt":"waist",
+  "legs":"legs",
+  "feet":"feet","boots":"feet",
+  "ring":"ring","finger":"ring",
+  "trinket":"trinket","abalorio":"trinket",
+  "main hand":"weaponMain","one-hand":"weaponMain","one hand":"weaponMain",
+  "off hand":"weaponOff",
+  "two-hand":"twoHand","two hand":"twoHand"
 };
 const BASE_SLOTS = ["head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet","weaponMain","weaponOff","twoHand"];
 const pick2Names = new Set(["ring","trinket"]);
@@ -102,7 +121,7 @@ async function sourceFor(itemId, tok){
           srcCache.set(itemId, src); return src;
         }
       }
-    }catch{/* sigue */}
+    }catch{/* continúa */}
   }
   // Intenta detectar crafteo
   try{
@@ -116,14 +135,37 @@ async function sourceFor(itemId, tok){
   const src = {type:"other"}; srcCache.set(itemId,src); return src;
 }
 
-// --------- Scraper Murlok (BIS por slot)
-function parseItemIdFromHref(href){
-  // wowhead.com/item=XXXX ... devuelve XXXX
-  const m = /[?&/]item=(\d+)/.exec(href) || /\/item\/(\d+)/.exec(href) || /item=(\d+)/.exec(href);
-  return m ? Number(m[1]) : null;
-}
+// --------- Utilidades parse/normalización
 function norm(s){ return String(s||"").trim().toLowerCase(); }
 
+// EXTRACCIÓN ROBUSTA del itemId desde enlaces Wowhead
+function parseItemIdFromHref(href){
+  if (!href) return null;
+
+  // 1) Intentar decodificar repetidamente por si viene item%253D12345 (doble-encode)
+  let url = String(href);
+  try {
+    for (let i=0; i<3; i++){
+      const prev = url;
+      url = decodeURIComponent(url);
+      if (url === prev) break;
+    }
+  } catch { /* si falla decode, seguimos con url tal cual */ }
+
+  // 2) Buscar patrones comunes
+  let m =
+    url.match(/(?:\?|&)item=(\d+)/) || // ?item=12345
+    url.match(/\/item\/(\d+)/)      || // /item/12345
+    url.match(/item%3D(\d+)/);         // item%3D12345 (por si quedó encodeado)
+
+  if (m) return Number(m[1]);
+
+  // 3) Último recurso: número largo al final
+  m = url.match(/(\d{5,})/);
+  return m ? Number(m[1]) : null;
+}
+
+// --------- Scraper Murlok (BIS por slot)
 async function fetchBisFromMurlok(classSlug, specSlug){
   const url = `https://murlok.io/${classSlug}/${specSlug}/m%2B`;
   const r = await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0 (compatible; bisbot/1.0)" }});
@@ -131,49 +173,63 @@ async function fetchBisFromMurlok(classSlug, specSlug){
   const html = await r.text();
   const $ = cheerio.load(html);
 
-  // Ubicamos el bloque "Best-in-Slot Gear"
+  // Buscar el bloque "Best-in-Slot Gear"
   const h2s = $("h2").toArray();
   const start = h2s.find(el => norm($(el).text()).includes("best-in-slot gear"));
-  if (!start) return {}; // sin sección BIS (raro)
-  const out = {}; // slotName -> [itemId,itemId2?]
+  if (!start) {
+    // Algunas guías usan un ancla diferente; probamos un fallback suave
+    const altStart = $("h2:contains('Best')").first();
+    if (!altStart.length) return [];
+    return extractFromSection($, altStart);
+  }
+  return extractFromSection($, $(start));
+}
 
-  // Recorremos hasta el próximo h2
-  let node = $(start).next();
+function extractFromSection($, startEl){
+  const outBySlot = {}; // slotCanon -> [ids]
+  let node = startEl.next();
   let currentSlot = null;
 
   while (node.length && node.prop("tagName") && node.prop("tagName").toLowerCase() !== "h2"){
     const tag = node.prop("tagName").toLowerCase();
+
     if (tag === "h3"){ // título de slot
-      const slotTitle = norm(node.text()); // e.g. "head", "ring", "main hand"
-      // normalizamos contra SLOT_CANON
+      const raw = norm(node.text())
+        .replace(/\brings\b/,'ring')
+        .replace(/\btrinkets\b/,'trinket')
+        .replace(/\bmain\s*hand\b/,'main hand')
+        .replace(/\boff\s*hand\b/,'off hand')
+        .replace(/\btwo-?\s*hand\b/,'two-hand');
+
       let bestKey = null;
       for (const [k,v] of Object.entries(SLOT_CANON)){
-        if (slotTitle.includes(k)){ bestKey = v; break; }
+        if (raw.includes(k)){ bestKey = v; break; }
       }
-      currentSlot = bestKey; // puede ser null si no reconocemos
-    }else if (currentSlot){
-      // buscar links wowhead debajo (primeros 1–2 ítems)
-      const links = node.find('a[href*="wowhead.com"]').toArray();
+      currentSlot = bestKey; // puede quedar null si no reconocemos
+    } else if (currentSlot){
+      // buscar links Wowhead debajo del h3 actual
+      const links = node.find('a[href*="wowhead"]').toArray();
       for (const a of links){
         const href = $(a).attr("href") || "";
         const id = parseItemIdFromHref(href);
         if (!id) continue;
-        if (!out[currentSlot]) out[currentSlot] = [];
-        // para ring/trinket queremos dos, para el resto sólo uno
+        if (!outBySlot[currentSlot]) outBySlot[currentSlot] = [];
         if (pick2Names.has(currentSlot.replace(/\d/g,""))){
-          if (out[currentSlot].length < 2 && !out[currentSlot].includes(id)) out[currentSlot].push(id);
+          if (outBySlot[currentSlot].length < 2 && !outBySlot[currentSlot].includes(id)){
+            outBySlot[currentSlot].push(id);
+          }
         } else {
-          if (out[currentSlot].length === 0) out[currentSlot].push(id);
+          if (outBySlot[currentSlot].length === 0) outBySlot[currentSlot].push(id);
         }
       }
     }
+
     node = node.next();
   }
 
-  // Estructura final por slot canonizado
-  // - ring -> ring1, ring2 ; trinket -> trinket1, trinket2
+  // Acomodar formato final
   const items = [];
-  for (const [slot, ids] of Object.entries(out)){
+  for (const [slot, ids] of Object.entries(outBySlot)){
     if (!ids?.length) continue;
     if (slot === "ring" || slot === "trinket"){
       const [a,b] = ids;
@@ -192,6 +248,10 @@ async function main(){
 
   const labels = {};
   const data = {};
+  const order = new Map([
+    ["head",1],["neck",2],["shoulder",3],["back",4],["chest",5],["wrist",6],["hands",7],["waist",8],
+    ["legs",9],["feet",10],["ring1",11],["ring2",12],["trinket1",13],["trinket2",14],["weaponMain",15],["weaponOff",16],["twoHand",17]
+  ]);
 
   for (const cl of CLASSES){
     labels[cl.className] = { label: cl.label, specs:{} };
@@ -203,18 +263,15 @@ async function main(){
       let items = [];
       try{
         const raw = await fetchBisFromMurlok(cl.slug, specSlug);
-        // Completar origen por item (raid/m+/crafted/other)
+
+        // Completar origen por item (raid/mplus/crafted/other)
         for (const it of raw){
           it.source = await sourceFor(it.id, blizzTok);
         }
-        // Asegurar orden por prioridad visual de slots
-        const order = new Map([
-          ["head",1],["neck",2],["shoulder",3],["back",4],["chest",5],["wrist",6],["hands",7],["waist",8],
-          ["legs",9],["feet",10],["ring1",11],["ring2",12],["trinket1",13],["trinket2",14],["weaponMain",15],["weaponOff",16],["twoHand",17]
-        ]);
+
         items = raw.sort((a,b)=>(order.get(a.slot)||99)-(order.get(b.slot)||99));
       }catch(e){
-        console.error(`Murlok fallo ${cl.className}/${specName}:`, e.message);
+        console.error(`Error ${cl.className}/${specName}:`, e.message);
         items = [];
       }
 
