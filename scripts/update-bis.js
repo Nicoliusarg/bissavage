@@ -1,59 +1,131 @@
-// scripts/update-bis.js — v2.2 (autodetecta zone por nombre + rdps)
+// scripts/update-bis.js — WCL v1 + zone + partition:-1 (con Blizzard para origen)
+// Requiere secrets: WCL_V1_KEY, BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET
+
 import fs from "fs";
 import fetch from "node-fetch";
 
 const {
-  WCL_CLIENT_ID, WCL_CLIENT_SECRET,
-  BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET,
-  REGION = "us", LOCALE = "es_MX",
+  WCL_V1_KEY,
+  BLIZZARD_CLIENT_ID,
+  BLIZZARD_CLIENT_SECRET,
+  REGION = "us",
+  LOCALE = "es_MX",
   SEASON_LABEL = "TWW S3",
-  RAID_ZONE_ID = "44",        // si no sirve, se intenta resolver por nombre
-  ZONE_NAME = "Manaforge",    // autodetección por nombre (parcial, case-insensitive)
+  RAID_ZONE_ID = "44", // Manaforge Omega
 } = process.env;
 
-if (!WCL_CLIENT_ID || !WCL_CLIENT_SECRET || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
-  console.error("Faltan secrets de API (WCL o Blizzard).");
+if (!WCL_V1_KEY || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
+  console.error("Faltan secrets: WCL_V1_KEY y/o BLIZZARD_*");
   process.exit(1);
 }
 
-// -------- Auth
-async function token(url, body) {
-  const r = await fetch(url, { method:"POST",
+const MAX_PAGES = 2;     // más muestra
+const PAUSE_MS  = 150;   // pausa suave para evitar 429
+
+// ----- Clases/spec (labels ES)
+const CLASSES = [
+  { className:"Warrior", label:"Guerrero", specs:[
+    {specName:"Arms",label:"Armas",role:"dps"},
+    {specName:"Fury",label:"Furia",role:"dps"},
+    {specName:"Protection",label:"Protección",role:"tank"},
+  ]},
+  { className:"Paladin", label:"Paladín", specs:[
+    {specName:"Holy",label:"Sagrado",role:"healer"},
+    {specName:"Protection",label:"Protección",role:"tank"},
+    {specName:"Retribution",label:"Reprensión",role:"dps"},
+  ]},
+  { className:"Hunter", label:"Cazador", specs:[
+    {specName:"Beast Mastery",label:"Maestro de Bestias",role:"dps"},
+    {specName:"Marksmanship",label:"Puntería",role:"dps"},
+    {specName:"Survival",label:"Supervivencia",role:"dps"},
+  ]},
+  { className:"Rogue", label:"Pícaro", specs:[
+    {specName:"Assassination",label:"Asesinato",role:"dps"},
+    {specName:"Outlaw",label:"Forajido",role:"dps"},
+    {specName:"Subtlety",label:"Sutileza",role:"dps"},
+  ]},
+  { className:"Priest", label:"Sacerdote", specs:[
+    {specName:"Discipline",label:"Disciplina",role:"healer"},
+    {specName:"Holy",label:"Sagrado",role:"healer"},
+    {specName:"Shadow",label:"Sombra",role:"dps"},
+  ]},
+  { className:"Death Knight", label:"Caballero de la Muerte", specs:[
+    {specName:"Blood",label:"Sangre",role:"tank"},
+    {specName:"Frost",label:"Escarcha",role:"dps"},
+    {specName:"Unholy",label:"Profano",role:"dps"},
+  ]},
+  { className:"Shaman", label:"Chamán", specs:[
+    {specName:"Elemental",label:"Elemental",role:"dps"},
+    {specName:"Enhancement",label:"Mejora",role:"dps"},
+    {specName:"Restoration",label:"Restauración",role:"healer"},
+  ]},
+  { className:"Mage", label:"Mago", specs:[
+    {specName:"Arcane",label:"Arcano",role:"dps"},
+    {specName:"Fire",label:"Fuego",role:"dps"},
+    {specName:"Frost",label:"Escarcha",role:"dps"},
+  ]},
+  { className:"Warlock", label:"Brujo", specs:[
+    {specName:"Affliction",label:"Aflicción",role:"dps"},
+    {specName:"Demonology",label:"Demonología",role:"dps"},
+    {specName:"Destruction",label:"Destrucción",role:"dps"},
+  ]},
+  { className:"Monk", label:"Monje", specs:[
+    {specName:"Brewmaster",label:"Maestro Cervecero",role:"tank"},
+    {specName:"Mistweaver",label:"Tejedor de Niebla",role:"healer"},
+    {specName:"Windwalker",label:"Viajero del Viento",role:"dps"},
+  ]},
+  { className:"Druid", label:"Druida", specs:[
+    {specName:"Balance",label:"Equilibrio",role:"dps"},
+    {specName:"Feral",label:"Feral",role:"dps"},
+    {specName:"Guardian",label:"Guardián",role:"tank"},
+    {specName:"Restoration",label:"Restauración",role:"healer"},
+  ]},
+  { className:"Demon Hunter", label:"Cazador de Demonios", specs:[
+    {specName:"Havoc",label:"Devastación",role:"dps"},
+    {specName:"Vengeance",label:"Venganza",role:"tank"},
+  ]},
+  { className:"Evoker", label:"Evocador", specs:[
+    {specName:"Devastation",label:"Devastación",role:"dps"},
+    {specName:"Preservation",label:"Preservación",role:"healer"},
+    {specName:"Augmentation",label:"Aumentación",role:"dps"},
+  ]},
+];
+
+// ----- Slots
+const SLOT_MAP = new Map(Object.entries({
+  head:"head", neck:"neck", shoulder:"shoulder", back:"back", chest:"chest",
+  wrist:"wrist", hands:"hands", waist:"waist", legs:"legs", feet:"feet",
+  finger1:"ring1", finger2:"ring2", trinket1:"trinket1", trinket2:"trinket2",
+  mainhand:"weaponMain", offhand:"weaponOff", twohand:"twoHand",
+}));
+// Fallback si WCL devuelve el slot como número
+const SLOT_BY_ID = {
+  1:"head", 2:"neck", 3:"shoulder", 15:"back", 5:"chest", 9:"wrist", 10:"hands",
+  6:"waist", 7:"legs", 8:"feet", 11:"ring1", 12:"ring2", 13:"trinket1", 14:"trinket2",
+  16:"weaponMain", 17:"weaponOff", 21:"twoHand",
+};
+const DESIRED_SLOTS = [
+  "head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet",
+  "ring1","ring2","trinket1","trinket2","weaponMain","weaponOff","twoHand",
+];
+
+const metricFor = (role) => role==="healer" ? "hps" : "dps";
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+
+// ---------- Blizzard (mapear origen)
+async function getBnetToken(){
+  const r = await fetch("https://oauth.battle.net/token", {
+    method:"POST",
     headers:{ "Content-Type":"application/x-www-form-urlencoded" },
-    body:new URLSearchParams(body) });
-  if (!r.ok) throw new Error(url+" -> "+r.status);
+    body: new URLSearchParams({
+      grant_type:"client_credentials",
+      client_id: BLIZZARD_CLIENT_ID,
+      client_secret: BLIZZARD_CLIENT_SECRET
+    })
+  });
+  if (!r.ok) throw new Error("BNet token "+r.status);
   return (await r.json()).access_token;
 }
-const getTokenWCL = () => token("https://www.warcraftlogs.com/oauth/token",
-  { grant_type:"client_credentials", client_id:WCL_CLIENT_ID, client_secret:WCL_CLIENT_SECRET });
-const getTokenBlizzard = () => token("https://oauth.battle.net/token",
-  { grant_type:"client_credentials", client_id:BLIZZARD_CLIENT_ID, client_secret:BLIZZARD_CLIENT_SECRET });
-
-// -------- WCL GQL
-async function gqlWCL(query, variables, tok){
-  const r = await fetch("https://www.warcraftlogs.com/api/v2/client", {
-    method:"POST", headers:{ "Content-Type":"application/json", Authorization:"Bearer "+tok },
-    body: JSON.stringify({ query, variables })
-  });
-  const j = await r.json();
-  if (j.errors) throw new Error(JSON.stringify(j.errors));
-  return j.data;
-}
-
-const Q_ZONES = `query { worldData { zones { id name } } }`;
-const Q_ZONE_ENCS = `query($zone:Int!){ worldData { zone(id:$zone){ id name encounters{ id name } } } }`;
-const Q_ENC_RANK = `
-query($enc:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $diff:Int!, $page:Int){
-  worldData {
-    encounter(id:$enc){
-      characterRankings(className:$className, specName:$specName,
-                        difficulty:$diff, metric:$metric, page:$page,
-                        includeCombatantInfo:true)
-    }
-  }
-}`;
-
-// -------- Blizzard Journal (origen)
 const instIdx = { loaded:false, list:[] }, encCache = new Map(), srcCache = new Map();
 async function instances(tok){
   if (instIdx.loaded) return instIdx.list;
@@ -96,83 +168,82 @@ async function sourceFor(itemId, tok){
   const src = {type:"other"}; srcCache.set(itemId,src); return src;
 }
 
-// -------- Clases/spec
-const CLASSES = [
-  { className:"Warrior", label:"Guerrero", specs:[ {specName:"Arms",label:"Armas",role:"dps"}, {specName:"Fury",label:"Furia",role:"dps"}, {specName:"Protection",label:"Protección",role:"tank"} ] },
-  { className:"Paladin", label:"Paladín", specs:[ {specName:"Holy",label:"Sagrado",role:"healer"}, {specName:"Protection",label:"Protección",role:"tank"}, {specName:"Retribution",label:"Reprensión",role:"dps"} ] },
-  { className:"Hunter", label:"Cazador", specs:[ {specName:"Beast Mastery",label:"Maestro de Bestias",role:"dps"}, {specName:"Marksmanship",label:"Puntería",role:"dps"}, {specName:"Survival",label:"Supervivencia",role:"dps"} ] },
-  { className:"Rogue", label:"Pícaro", specs:[ {specName:"Assassination",label:"Asesinato",role:"dps"}, {specName:"Outlaw",label:"Forajido",role:"dps"}, {specName:"Subtlety",label:"Sutileza",role:"dps"} ] },
-  { className:"Priest", label:"Sacerdote", specs:[ {specName:"Discipline",label:"Disciplina",role:"healer"}, {specName:"Holy",label:"Sagrado",role:"healer"}, {specName:"Shadow",label:"Sombra",role:"dps"} ] },
-  { className:"Death Knight", label:"Caballero de la Muerte", specs:[ {specName:"Blood",label:"Sangre",role:"tank"}, {specName:"Frost",label:"Escarcha",role:"dps"}, {specName:"Unholy",label:"Profano",role:"dps"} ] },
-  { className:"Shaman", label:"Chamán", specs:[ {specName:"Elemental",label:"Elemental",role:"dps"}, {specName:"Enhancement",label:"Mejora",role:"dps"}, {specName:"Restoration",label:"Restauración",role:"healer"} ] },
-  { className:"Mage", label:"Mago", specs:[ {specName:"Arcane",label:"Arcano",role:"dps"}, {specName:"Fire",label:"Fuego",role:"dps"}, {specName:"Frost",label:"Escarcha",role:"dps"} ] },
-  { className:"Warlock", label:"Brujo", specs:[ {specName:"Affliction",label:"Aflicción",role:"dps"}, {specName:"Demonology",label:"Demonología",role:"dps"}, {specName:"Destruction",label:"Destrucción",role:"dps"} ] },
-  { className:"Monk", label:"Monje", specs:[ {specName:"Brewmaster",label:"Maestro Cervecero",role:"tank"}, {specName:"Mistweaver",label:"Tejedor de Niebla",role:"healer"}, {specName:"Windwalker",label:"Viajero del Viento",role:"dps"} ] },
-  { className:"Druid", label:"Druida", specs:[ {specName:"Balance",label:"Equilibrio",role:"dps"}, {specName:"Feral",label:"Feral",role:"dps"}, {specName:"Guardian",label:"Guardián",role:"tank"}, {specName:"Restoration",label:"Restauración",role:"healer"} ] },
-  { className:"Demon Hunter", label:"Cazador de Demonios", specs:[ {specName:"Havoc",label:"Devastación",role:"dps"}, {specName:"Vengeance",label:"Venganza",role:"tank"} ] },
-  { className:"Evoker", label:"Evocador", specs:[ {specName:"Devastation",label:"Devastación",role:"dps"}, {specName:"Preservation",label:"Preservación",role:"healer"}, {specName:"Augmentation",label:"Aumentación",role:"dps"} ] },
-];
-
-const SLOT_MAP = new Map(Object.entries({
-  head:"head", neck:"neck", shoulder:"shoulder", back:"back", chest:"chest",
-  wrist:"wrist", hands:"hands", waist:"waist", legs:"legs", feet:"feet",
-  finger1:"ring1", finger2:"ring2", trinket1:"trinket1", trinket2:"trinket2",
-  mainhand:"weaponMain", offhand:"weaponOff", twohand:"twoHand",
-}));
-const DESIRED_SLOTS = ["head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet","ring1","ring2","trinket1","trinket2","weaponMain","weaponOff","twoHand"];
-
-const metricFor = (role) => role==="healer" ? "hps" : "rdps";
-
-// —— Resuelve zone: usa ID; si no tiene encounters, busca por nombre ZONE_NAME
-async function resolveZoneId(wclTok){
-  // intenta con el ID dado
-  try{
-    const z = await gqlWCL(Q_ZONE_ENCS, { zone:Number(RAID_ZONE_ID) }, wclTok);
-    const encs = z?.worldData?.zone?.encounters || [];
-    if (encs.length) return { id:Number(RAID_ZONE_ID), name:z.worldData.zone.name, encounters:encs };
-  }catch{}
-  // busca por nombre
-  const all = await gqlWCL(Q_ZONES, {}, wclTok);
-  const zones = all?.worldData?.zones || [];
-  const found = zones.find(z => String(z.name).toLowerCase().includes(String(ZONE_NAME).toLowerCase()));
-  if (!found) throw new Error("No se encontró zone por nombre: "+ZONE_NAME);
-  const z2 = await gqlWCL(Q_ZONE_ENCS, { zone: Number(found.id) }, wclTok);
-  const encs2 = z2?.worldData?.zone?.encounters || [];
-  if (!encs2.length) throw new Error("Zone sin encounters: "+found.id+" "+found.name);
-  console.log(`Zone resuelto: ${found.name} (#${found.id}) con ${encs2.length} encounters`);
-  return { id:Number(found.id), name:found.name, encounters:encs2 };
+// ---------- WCL v1 helpers
+async function v1(path, params={}){
+  const url = new URL(`https://www.warcraftlogs.com/v1/${path}`);
+  Object.entries(params).forEach(([k,v])=> url.searchParams.set(k,String(v)));
+  url.searchParams.set("api_key", WCL_V1_KEY);
+  const r = await fetch(url.toString());
+  if (!r.ok) throw new Error(path+" -> "+r.status);
+  return r.json();
 }
 
-// —— calcula BiS por spec sumando rankings de cada encounter
-async function buildForSpec(wclTok, blizzTok, zone, className, specName, metric){
-  for (const diff of [5,4,3,2]) {
+// /v1/zones => zones + encounters
+async function getZoneEncounters(zoneId){
+  const zones = await v1("zones");
+  const z = zones.find(z=>Number(z.id) === Number(zoneId));
+  if (!z || !z.encounters?.length) throw new Error("Zone sin encounters: "+zoneId);
+  return z.encounters.map(e=>({ id:e.id, name:e.name }));
+}
+
+// /v1/rankings/encounter/{encounterID}? ... includeCombatantInfo=true
+async function fetchEncounterRankings(encId, zoneId, className, specName, metric, difficulty, page){
+  return v1(`rankings/encounter/${encId}`, {
+    zone: Number(zoneId),          // <- zona específica
+    class: className,
+    spec:  specName,
+    difficulty,
+    metric,
+    partition: -1,                 // <- todas las particiones
+    includeCombatantInfo: true,
+    page
+  });
+}
+
+// Normaliza slot desde string o id numérico
+function normalizeSlot(slot){
+  const t = typeof slot;
+  if (t === "string") return SLOT_MAP.get(slot.toLowerCase()) || null;
+  if (t === "number") return SLOT_BY_ID[slot] || null;
+  return null;
+}
+
+// ---------- Calcula BiS por frecuencia de uso en rankings
+async function buildForSpec(blizzTok, zoneId, className, specName, role){
+  const metric = metricFor(role);
+  const encounters = await getZoneEncounters(zoneId);
+
+  for (const diff of [4,5]) {  // Heroico → Mítico (más datos primero)
     const freq = new Map();
 
-    for (const enc of zone.encounters){
-      let page = 1;
-      while (page <= 5) {
-        const d = await gqlWCL(Q_ENC_RANK, { enc:enc.id, className, specName, metric, diff, page }, wclTok);
-        let raw = d?.worldData?.encounter?.characterRankings;
-        try { if (typeof raw === "string") raw = JSON.parse(raw); } catch(e){ raw = null; }
-        const resp = raw && typeof raw === "object" ? raw : { rankings:[], hasMorePages:false };
-        const ranks = Array.isArray(resp.rankings) ? resp.rankings : [];
-        if (!ranks.length) break;
-        for (const r of ranks){
-          for (const g of (r.gear || [])){
-            const slot = SLOT_MAP.get(String(g.slot||"").toLowerCase());
-            if (!slot) continue;
-            const key = `${slot}:${g.id}`;
-            freq.set(key, (freq.get(key)||0) + 1);
+    for (const enc of encounters){
+      for (let page=1; page<=MAX_PAGES; page++){
+        try{
+          const ranks = await fetchEncounterRankings(enc.id, zoneId, className, specName, metric, diff, page);
+          if (page === 1) console.log(`[DBG] ${className}/${specName} boss ${enc.id} diff ${diff}: page1=${Array.isArray(ranks)?ranks.length:0}`);
+          if (!Array.isArray(ranks) || !ranks.length) break;
+
+          for (const r of ranks){
+            for (const g of (r.gear||[])){
+              const slot = normalizeSlot(g.slot);
+              if (!slot) continue;
+              const key = `${slot}:${g.id}`;
+              freq.set(key, (freq.get(key)||0) + 1);
+            }
           }
+          await sleep(PAUSE_MS);
+        }catch(e){
+          // 400/404 cuando no hay datos para esa combinación → cortar páginas de ese boss
+          break;
         }
-        if (!resp.hasMorePages) break;
-        page++;
       }
     }
 
     const out = [];
     for (const s of DESIRED_SLOTS){
-      const best = [...freq.entries()].filter(([k])=>k.startsWith(s+":")).sort((a,b)=>b[1]-a[1])[0];
+      const best = [...freq.entries()]
+        .filter(([k])=>k.startsWith(s+":"))
+        .sort((a,b)=>b[1]-a[1])[0];
       if (!best) continue;
       const itemId = Number(best[0].split(":")[1]);
       const source = await sourceFor(itemId, blizzTok);
@@ -180,21 +251,23 @@ async function buildForSpec(wclTok, blizzTok, zone, className, specName, metric)
     }
     if (out.length) return out;
   }
+
   return [];
 }
 
 async function main(){
-  const [wclTok, blizzTok] = await Promise.all([getTokenWCL(), getTokenBlizzard()]);
-  const zone = await resolveZoneId(wclTok);
+  const blizzTok = await getBnetToken();
 
-  const data = {}, labels = {};
+  const data = {};
+  const labels = {};
   for (const cl of CLASSES){
     data[cl.className] = {};
     labels[cl.className] = { label: cl.label, specs:{} };
+
     for (const sp of cl.specs){
       labels[cl.className].specs[sp.specName] = sp.label;
       try{
-        const items = await buildForSpec(wclTok, blizzTok, zone, cl.className, sp.specName, metricFor(sp.role));
+        const items = await buildForSpec(blizzTok, Number(RAID_ZONE_ID), cl.className, sp.specName, sp.role);
         console.log(`OK ${cl.className}/${sp.specName}: ${items.length} slots`);
         data[cl.className][sp.specName] = items;
       }catch(e){
@@ -203,6 +276,7 @@ async function main(){
       }
     }
   }
+
   const out = { meta:{ season:SEASON_LABEL, updated:new Date().toISOString() }, labels, data };
   fs.writeFileSync("bis-feed.js", "window.BIS_FEED = " + JSON.stringify(out, null, 2) + ";\n");
   console.log("bis-feed.js listo.");
