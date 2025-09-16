@@ -4,6 +4,9 @@ on:
     - cron: '0 */6 * * *'   # cada 6 horas
   workflow_dispatch: {}
 
+permissions:
+  contents: write   # necesario para hacer commit/push
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,18 +15,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      # Habilita ES Modules para poder usar "import ..."
+      - name: Enable ES modules
+        run: echo '{"type":"module"}' > package.json
+
       - run: npm i node-fetch@3
+
       - name: Update bis-feed.js
         env:
+          # NUEVO: key de la API V1 de WCL
+          WCL_V1_KEY: ${{ secrets.WCL_V1_KEY }}
+
+          # Si más adelante volvemos a v2, estos ya están:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+
+          # Blizzard Game Data (para mapear origen Raid/M+ / Crafteo)
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+
+          # Config del feed
           REGION: us
           LOCALE: es_MX
           SEASON_LABEL: "TWW S3"
-          RAID_ZONE_ID: '44'   # Manaforge
+          RAID_ZONE_ID: '44'   # Manaforge Omega
         run: node scripts/update-bis.js
+
       - name: Commit feed
         run: |
           if [[ -n $(git status --porcelain) ]]; then
