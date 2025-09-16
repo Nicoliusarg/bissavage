@@ -1,7 +1,7 @@
 window.BIS_FEED = {
   "meta": {
     "season": "TWW S3",
-    "updated": "2025-09-16T02:30:40.187Z"
+    "updated": "2025-09-16T02:34:18.801Z"
   },
   "labels": {
     "Warrior": {
