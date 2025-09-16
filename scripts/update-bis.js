@@ -1,28 +1,37 @@
-// scripts/update-bis.js — WCL v1 + zone + partition:-1 (con Blizzard para origen)
-// Requiere secrets: WCL_V1_KEY, BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET
+// scripts/update-bis.js — Estrategia B (WCL v2) + fallback v1 + rescate Journal
+// Requiere:
+//   - WCL_CLIENT_ID, WCL_CLIENT_SECRET  (v2 OAuth)
+//   - WCL_V1_KEY                        (v1 API key)  [fallback]
+//   - BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET      (Journal / origen)
+// YAML: recuerda el paso "Enable ES modules" (package.json { "type": "module" })
 
 import fs from "fs";
 import fetch from "node-fetch";
 
 const {
+  // WCL v2
+  WCL_CLIENT_ID,
+  WCL_CLIENT_SECRET,
+  // WCL v1 (fallback)
   WCL_V1_KEY,
+  // Blizzard
   BLIZZARD_CLIENT_ID,
   BLIZZARD_CLIENT_SECRET,
+  // Config
   REGION = "us",
   LOCALE = "es_MX",
   SEASON_LABEL = "TWW S3",
-  RAID_ZONE_ID = "44", // Manaforge Omega
+  RAID_ZONE_ID = "44", // Manaforge Omega (WCL zone id)
 } = process.env;
 
-if (!WCL_V1_KEY || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
-  console.error("Faltan secrets: WCL_V1_KEY y/o BLIZZARD_*");
-  process.exit(1);
-}
+const MAX_PAGES = 2;   // páginas por boss
+const PAUSE_MS  = 150; // antirate-limit
 
-const MAX_PAGES = 2;     // más muestra
-const PAUSE_MS  = 150;   // pausa suave para evitar 429
+// -------------------- Helpers base
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+const metricFor = (role)=> role==="healer" ? "hps" : "dps"; // simple y universal
 
-// ----- Clases/spec (labels ES)
+// -------------------- Clases/specs (labels ES)
 const CLASSES = [
   { className:"Warrior", label:"Guerrero", specs:[
     {specName:"Arms",label:"Armas",role:"dps"},
@@ -91,28 +100,30 @@ const CLASSES = [
   ]},
 ];
 
-// ----- Slots
+// -------------------- Slots
 const SLOT_MAP = new Map(Object.entries({
   head:"head", neck:"neck", shoulder:"shoulder", back:"back", chest:"chest",
   wrist:"wrist", hands:"hands", waist:"waist", legs:"legs", feet:"feet",
   finger1:"ring1", finger2:"ring2", trinket1:"trinket1", trinket2:"trinket2",
   mainhand:"weaponMain", offhand:"weaponOff", twohand:"twoHand",
 }));
-// Fallback si WCL devuelve el slot como número
 const SLOT_BY_ID = {
-  1:"head", 2:"neck", 3:"shoulder", 15:"back", 5:"chest", 9:"wrist", 10:"hands",
-  6:"waist", 7:"legs", 8:"feet", 11:"ring1", 12:"ring2", 13:"trinket1", 14:"trinket2",
-  16:"weaponMain", 17:"weaponOff", 21:"twoHand",
+  1:"head",2:"neck",3:"shoulder",15:"back",5:"chest",9:"wrist",10:"hands",
+  6:"waist",7:"legs",8:"feet",11:"ring1",12:"ring2",13:"trinket1",14:"trinket2",
+  16:"weaponMain",17:"weaponOff",21:"twoHand",
 };
 const DESIRED_SLOTS = [
   "head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet",
   "ring1","ring2","trinket1","trinket2","weaponMain","weaponOff","twoHand",
 ];
+const normalizeSlot = (slot)=>{
+  const t = typeof slot;
+  if (t === "string") return SLOT_MAP.get(slot.toLowerCase()) || null;
+  if (t === "number") return SLOT_BY_ID[slot] || null;
+  return null;
+};
 
-const metricFor = (role) => role==="healer" ? "hps" : "dps";
-const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-
-// ---------- Blizzard (mapear origen)
+// -------------------- Blizzard (token + journal + origen)
 async function getBnetToken(){
   const r = await fetch("https://oauth.battle.net/token", {
     method:"POST",
@@ -152,11 +163,12 @@ async function sourceFor(itemId, tok){
           const src = t==="RAID" ? {type:"raid",instance:d.name,boss:det.name}
                     : t==="DUNGEON" ? {type:"mplus",dungeon:d.name}
                     : {type:"other"};
-          srcCache.set(itemId, src); return src;
+          srcCache.set(itemId,src); return src;
         }
       }
     }catch{}
   }
+  // ¿Crafteo?
   try{
     const it = await (await fetch(
       `https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
@@ -165,11 +177,98 @@ async function sourceFor(itemId, tok){
       const src = {type:"crafted"}; srcCache.set(itemId,src); return src;
     }
   }catch{}
-  const src = {type:"other"}; srcCache.set(itemId,src); return src;
+  const fallback = {type:"other"}; srcCache.set(itemId,fallback); return fallback;
 }
 
-// ---------- WCL v1 helpers
+// Rescate: del Diario de la Raid (elige mayor ilvl por slot entre todos los bosses)
+async function journalFallback(zoneEncounters, tok){
+  // Recorre todos los encounters y junta items, elige mayor ilvl por slot (aprox)
+  const bestBySlot = new Map();
+  for (const e of zoneEncounters){
+    try{
+      const det = await (await fetch(
+        `https://${REGION}.api.blizzard.com/data/wow/journal-encounter/${e.id}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
+      )).json();
+      for (const ji of (det.items||[])){
+        const itemId = ji?.item?.id; if (!itemId) continue;
+        const slot = normalizeSlot(ji?.inventory_type?.type?.toLowerCase?.() || "");
+        if (!slot) continue;
+        // Tomar item level del "preview_item" si existe
+        const full = await (await fetch(
+          `https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
+        )).json().catch(()=>null);
+        const ilvl = full?.preview_item?.item_level?.value || 0;
+        const prev = bestBySlot.get(slot);
+        if (!prev || ilvl > prev.ilvl) bestBySlot.set(slot, { id:itemId, ilvl });
+      }
+    }catch{}
+    await sleep(80);
+  }
+  const out = [];
+  for (const s of DESIRED_SLOTS){
+    const b = bestBySlot.get(s);
+    if (b) out.push({ slot:s, id:b.id, source:{type:"raid"} });
+  }
+  return out;
+}
+
+// -------------------- WCL v2 (OAuth + GraphQL)
+async function getWclV2Token(){
+  if (!WCL_CLIENT_ID || !WCL_CLIENT_SECRET) return null;
+  const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
+    method:"POST",
+    headers:{ "Content-Type":"application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type:"client_credentials",
+      client_id: WCL_CLIENT_ID,
+      client_secret: WCL_CLIENT_SECRET
+    })
+  });
+  if (!r.ok) return null;
+  const j = await r.json();
+  return j.access_token || null;
+}
+async function gqlWcl(query, variables, token){
+  const r = await fetch("https://www.warcraftlogs.com/api/v2/client", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token },
+    body: JSON.stringify({ query, variables })
+  });
+  if (!r.ok) throw new Error("WCL v2 "+r.status);
+  const j = await r.json();
+  if (j.errors) throw new Error("WCL v2 errors "+JSON.stringify(j.errors));
+  return j.data;
+}
+const Q_ZONE = `
+query($zoneId:Int!){
+  worldData { zone(id:$zoneId){ encounters{ id name } } }
+}`;
+const Q_FIGHT = `
+query($encId:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $diff:Int!, $page:Int!, $partition:Int!){
+  worldData{
+    encounter(id:$encId){
+      fightRankings(
+        className:$className, specName:$specName,
+        difficulty:$diff, metric:$metric, page:$page,
+        partition:$partition, includeCombatantInfo:true
+      ){
+        hasMorePages
+        rankings{
+          name
+          class
+          spec
+          // Cuando includeCombatantInfo:true, 'gear' suele aparecer en cada ranking:
+          gear { id slot }  // algunos esquemas lo anidan en combatantInfo.gear; manejamos ambos abajo
+          combatantInfo { gear { id slot } }
+        }
+      }
+    }
+  }
+}`;
+
+// -------------------- WCL v1 (fallback)
 async function v1(path, params={}){
+  if (!WCL_V1_KEY) throw new Error("Sin WCL_V1_KEY");
   const url = new URL(`https://www.warcraftlogs.com/v1/${path}`);
   Object.entries(params).forEach(([k,v])=> url.searchParams.set(k,String(v)));
   url.searchParams.set("api_key", WCL_V1_KEY);
@@ -177,101 +276,150 @@ async function v1(path, params={}){
   if (!r.ok) throw new Error(path+" -> "+r.status);
   return r.json();
 }
-
-// /v1/zones => zones + encounters
-async function getZoneEncounters(zoneId){
-  const zones = await v1("zones");
-  const z = zones.find(z=>Number(z.id) === Number(zoneId));
-  if (!z || !z.encounters?.length) throw new Error("Zone sin encounters: "+zoneId);
-  return z.encounters.map(e=>({ id:e.id, name:e.name }));
-}
-
-// /v1/rankings/encounter/{encounterID}? ... includeCombatantInfo=true
-async function fetchEncounterRankings(encId, zoneId, className, specName, metric, difficulty, page){
+async function v1Zones(){ return v1("zones"); }
+async function v1Encounter(encId, zoneId, className, specName, metric, difficulty, page){
   return v1(`rankings/encounter/${encId}`, {
-    zone: Number(zoneId),          // <- zona específica
-    class: className,
+    zone: Number(zoneId),
+    class: className,    // v1 también soporta nombres modernos
     spec:  specName,
     difficulty,
     metric,
-    partition: -1,                 // <- todas las particiones
+    partition: -1,
     includeCombatantInfo: true,
     page
   });
 }
 
-// Normaliza slot desde string o id numérico
-function normalizeSlot(slot){
-  const t = typeof slot;
-  if (t === "string") return SLOT_MAP.get(slot.toLowerCase()) || null;
-  if (t === "number") return SLOT_BY_ID[slot] || null;
-  return null;
-}
-
-// ---------- Calcula BiS por frecuencia de uso en rankings
-async function buildForSpec(blizzTok, zoneId, className, specName, role){
+// -------------------- Lógica de construcción por spec
+async function buildForSpec({ blizzTok, wclV2Tok, zoneId, className, specName, role }){
   const metric = metricFor(role);
-  const encounters = await getZoneEncounters(zoneId);
+  // 1) Conseguir encounters del zone (prefiero v2; si falla, v1)
+  let encounters = [];
+  try{
+    if (wclV2Tok){
+      const d = await gqlWcl(Q_ZONE, { zoneId: Number(zoneId) }, wclV2Tok);
+      encounters = d?.worldData?.zone?.encounters || [];
+    }
+  }catch{}
+  if (!encounters.length){
+    try{
+      const z = await v1Zones();
+      const zone = z.find(z=> Number(z.id) === Number(zoneId));
+      encounters = (zone?.encounters||[]).map(e=>({id:e.id, name:e.name}));
+    }catch{}
+  }
+  if (!encounters.length) throw new Error("Sin encounters del zone");
 
-  for (const diff of [4,5]) {  // Heroico → Mítico (más datos primero)
+  // 2) Intento con WCL v2: fightRankings + includeCombatantInfo
+  for (const diff of [4,5]){ // Heroic → Mythic (más datos al inicio)
     const freq = new Map();
-
-    for (const enc of encounters){
-      for (let page=1; page<=MAX_PAGES; page++){
-        try{
-          const ranks = await fetchEncounterRankings(enc.id, zoneId, className, specName, metric, diff, page);
-          if (page === 1) console.log(`[DBG] ${className}/${specName} boss ${enc.id} diff ${diff}: page1=${Array.isArray(ranks)?ranks.length:0}`);
-          if (!Array.isArray(ranks) || !ranks.length) break;
-
-          for (const r of ranks){
-            for (const g of (r.gear||[])){
-              const slot = normalizeSlot(g.slot);
-              if (!slot) continue;
-              const key = `${slot}:${g.id}`;
-              freq.set(key, (freq.get(key)||0) + 1);
+    if (wclV2Tok){
+      for (const enc of encounters){
+        for (let page=1; page<=MAX_PAGES; page++){
+          try{
+            const d = await gqlWcl(Q_FIGHT, {
+              encId: enc.id, className, specName, metric, diff, page, partition: -1
+            }, wclV2Tok);
+            const fr = d?.worldData?.encounter?.fightRankings;
+            const rows = fr?.rankings || [];
+            if (page===1) console.log(`[V2] ${className}/${specName} boss ${enc.id} diff ${diff} page1=${rows.length}`);
+            if (!rows.length) break;
+            for (const r of rows){
+              const gearArr = (r?.gear && Array.isArray(r.gear) ? r.gear
+                              : r?.combatantInfo?.gear && Array.isArray(r.combatantInfo.gear) ? r.combatantInfo.gear
+                              : []);
+              for (const g of gearArr){
+                const slot = normalizeSlot(g?.slot);
+                const id = Number(g?.id);
+                if (!slot || !id) continue;
+                const key = `${slot}:${id}`;
+                freq.set(key, (freq.get(key)||0) + 1);
+              }
             }
+            await sleep(PAUSE_MS);
+            if (!fr?.hasMorePages && page>=1) break;
+          }catch(e){
+            break; // pasa al siguiente boss
           }
-          await sleep(PAUSE_MS);
-        }catch(e){
-          // 400/404 cuando no hay datos para esa combinación → cortar páginas de ese boss
-          break;
         }
       }
+      const out = [];
+      for (const s of DESIRED_SLOTS){
+        const best = [...freq.entries()].filter(([k])=>k.startsWith(s+":")).sort((a,b)=>b[1]-a[1])[0];
+        if (!best) continue;
+        const itemId = Number(best[0].split(":")[1]);
+        const source = await sourceFor(itemId, blizzTok);
+        out.push({ slot:s, id:itemId, source });
+      }
+      if (out.length) return out;
     }
 
-    const out = [];
-    for (const s of DESIRED_SLOTS){
-      const best = [...freq.entries()]
-        .filter(([k])=>k.startsWith(s+":"))
-        .sort((a,b)=>b[1]-a[1])[0];
-      if (!best) continue;
-      const itemId = Number(best[0].split(":")[1]);
-      const source = await sourceFor(itemId, blizzTok);
-      out.push({ slot:s, id:itemId, source });
+    // 3) Fallback v1
+    if (WCL_V1_KEY){
+      const freq2 = new Map();
+      for (const enc of encounters){
+        for (let page=1; page<=MAX_PAGES; page++){
+          try{
+            const ranks = await v1Encounter(enc.id, zoneId, className, specName, metric, diff, page);
+            if (!Array.isArray(ranks) || !ranks.length) break;
+            if (page===1) console.log(`[V1] ${className}/${specName} boss ${enc.id} diff ${diff} page1=${ranks.length}`);
+            for (const r of ranks){
+              for (const g of (r.gear||[])){
+                const slot = normalizeSlot(g.slot);
+                const id = Number(g.id);
+                if (!slot || !id) continue;
+                const key = `${slot}:${id}`;
+                freq2.set(key, (freq2.get(key)||0) + 1);
+              }
+            }
+            await sleep(PAUSE_MS);
+          }catch(e){
+            break;
+          }
+        }
+      }
+      const out2 = [];
+      for (const s of DESIRED_SLOTS){
+        const best = [...freq2.entries()].filter(([k])=>k.startsWith(s+":")).sort((a,b)=>b[1]-a[1])[0];
+        if (!best) continue;
+        const itemId = Number(best[0].split(":")[1]);
+        const source = await sourceFor(itemId, blizzTok);
+        out2.push({ slot:s, id:itemId, source });
+      }
+      if (out2.length) return out2;
     }
-    if (out.length) return out;
   }
 
-  return [];
+  // 4) Rescate: Diario (para no dejar vacía la UI)
+  console.log(`[FALLBACK] Diario para ${className}/${specName}`);
+  return await journalFallback(encounters, blizzTok);
 }
 
+// -------------------- main
 async function main(){
+  if (!BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
+    console.error("Faltan BLIZZARD_* (Client ID/Secret)");
+    process.exit(1);
+  }
   const blizzTok = await getBnetToken();
+  const wclV2Tok = await getWclV2Token(); // puede ser null; igual seguimos
 
   const data = {};
   const labels = {};
   for (const cl of CLASSES){
     data[cl.className] = {};
     labels[cl.className] = { label: cl.label, specs:{} };
-
     for (const sp of cl.specs){
       labels[cl.className].specs[sp.specName] = sp.label;
       try{
-        const items = await buildForSpec(blizzTok, Number(RAID_ZONE_ID), cl.className, sp.specName, sp.role);
+        const items = await buildForSpec({
+          blizzTok, wclV2Tok, zoneId: Number(RAID_ZONE_ID),
+          className: cl.className, specName: sp.specName, role: sp.role
+        });
         console.log(`OK ${cl.className}/${sp.specName}: ${items.length} slots`);
         data[cl.className][sp.specName] = items;
       }catch(e){
-        console.error(`Error ${cl.className}/${sp.specName}:`, e.message);
+        console.error(`ERR ${cl.className}/${sp.specName}:`, e.message);
         data[cl.className][sp.specName] = [];
       }
     }
