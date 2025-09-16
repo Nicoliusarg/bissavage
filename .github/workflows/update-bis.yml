@@ -20,14 +20,15 @@ jobs:
       - name: Enable ES modules
         run: echo '{"type":"module"}' > package.json
 
-      - run: npm i node-fetch@3
+      - name: Install deps
+        run: npm i node-fetch@3 cheerio@1
 
       - name: Update bis-feed.js
         env:
-          # NUEVO: key de la API V1 de WCL
+          # WCL v1 (si está, intenta logs)
           WCL_V1_KEY: ${{ secrets.WCL_V1_KEY }}
 
-          # Si más adelante volvemos a v2, estos ya están:
+          # (Opcional) WCL v2: los dejamos por si a futuro volvés a v2
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
 
