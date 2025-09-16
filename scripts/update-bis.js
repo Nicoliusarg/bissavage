@@ -1,4 +1,4 @@
-// scripts/update-bis.js — v2.1 (parsea JSON de WCL y recorre dificultades)
+// scripts/update-bis.js — v2.2 (autodetecta zone por nombre + rdps)
 import fs from "fs";
 import fetch from "node-fetch";
 
@@ -7,7 +7,8 @@ const {
   BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET,
   REGION = "us", LOCALE = "es_MX",
   SEASON_LABEL = "TWW S3",
-  RAID_ZONE_ID = "44", // Manaforge
+  RAID_ZONE_ID = "44",        // si no sirve, se intenta resolver por nombre
+  ZONE_NAME = "Manaforge",    // autodetección por nombre (parcial, case-insensitive)
 } = process.env;
 
 if (!WCL_CLIENT_ID || !WCL_CLIENT_SECRET || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLIENT_SECRET) {
@@ -15,7 +16,7 @@ if (!WCL_CLIENT_ID || !WCL_CLIENT_SECRET || !BLIZZARD_CLIENT_ID || !BLIZZARD_CLI
   process.exit(1);
 }
 
-// ------------ Auth
+// -------- Auth
 async function token(url, body) {
   const r = await fetch(url, { method:"POST",
     headers:{ "Content-Type":"application/x-www-form-urlencoded" },
@@ -28,7 +29,7 @@ const getTokenWCL = () => token("https://www.warcraftlogs.com/oauth/token",
 const getTokenBlizzard = () => token("https://oauth.battle.net/token",
   { grant_type:"client_credentials", client_id:BLIZZARD_CLIENT_ID, client_secret:BLIZZARD_CLIENT_SECRET });
 
-// ------------ WCL GQL
+// -------- WCL GQL
 async function gqlWCL(query, variables, tok){
   const r = await fetch("https://www.warcraftlogs.com/api/v2/client", {
     method:"POST", headers:{ "Content-Type":"application/json", Authorization:"Bearer "+tok },
@@ -39,11 +40,10 @@ async function gqlWCL(query, variables, tok){
   return j.data;
 }
 
-const Q_ZONE_ENCS = `
-query QZone($zone:Int!){ worldData { zone(id:$zone){ encounters { id name } } } }`;
-
+const Q_ZONES = `query { worldData { zones { id name } } }`;
+const Q_ZONE_ENCS = `query($zone:Int!){ worldData { zone(id:$zone){ id name encounters{ id name } } } }`;
 const Q_ENC_RANK = `
-query QEnc($enc:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $diff:Int!, $page:Int){
+query($enc:Int!, $className:String!, $specName:String!, $metric:RankingMetric!, $diff:Int!, $page:Int){
   worldData {
     encounter(id:$enc){
       characterRankings(className:$className, specName:$specName,
@@ -53,11 +53,13 @@ query QEnc($enc:Int!, $className:String!, $specName:String!, $metric:RankingMetr
   }
 }`;
 
-// ------------ Blizzard Journal (mapa de origen)
+// -------- Blizzard Journal (origen)
 const instIdx = { loaded:false, list:[] }, encCache = new Map(), srcCache = new Map();
 async function instances(tok){
   if (instIdx.loaded) return instIdx.list;
-  const x = await (await fetch(`https://${REGION}.api.blizzard.com/data/wow/journal-instance/index?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`)).json();
+  const x = await (await fetch(
+    `https://${REGION}.api.blizzard.com/data/wow/journal-instance/index?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
+  )).json();
   instIdx.loaded = true; instIdx.list = x.instances || []; return instIdx.list;
 }
 async function encItems(href, tok){
@@ -84,7 +86,9 @@ async function sourceFor(itemId, tok){
     }catch{}
   }
   try{
-    const it = await (await fetch(`https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`)).json();
+    const it = await (await fetch(
+      `https://${REGION}.api.blizzard.com/data/wow/item/${itemId}?namespace=static-${REGION}&locale=${LOCALE}&access_token=${tok}`
+    )).json();
     if (it?.preview_item && (it.preview_item.is_crafted || it.preview_item.crafted_quality || it.preview_item.crafting_reagent)){
       const src = {type:"crafted"}; srcCache.set(itemId,src); return src;
     }
@@ -92,7 +96,7 @@ async function sourceFor(itemId, tok){
   const src = {type:"other"}; srcCache.set(itemId,src); return src;
 }
 
-// ------------ Esquema clases/spec
+// -------- Clases/spec
 const CLASSES = [
   { className:"Warrior", label:"Guerrero", specs:[ {specName:"Arms",label:"Armas",role:"dps"}, {specName:"Fury",label:"Furia",role:"dps"}, {specName:"Protection",label:"Protección",role:"tank"} ] },
   { className:"Paladin", label:"Paladín", specs:[ {specName:"Holy",label:"Sagrado",role:"healer"}, {specName:"Protection",label:"Protección",role:"tank"}, {specName:"Retribution",label:"Reprensión",role:"dps"} ] },
@@ -117,27 +121,42 @@ const SLOT_MAP = new Map(Object.entries({
 }));
 const DESIRED_SLOTS = ["head","neck","shoulder","back","chest","wrist","hands","waist","legs","feet","ring1","ring2","trinket1","trinket2","weaponMain","weaponOff","twoHand"];
 
-const metricFor = (role) => role==="healer" ? "hps" : "dps";
+const metricFor = (role) => role==="healer" ? "hps" : "rdps";
 
-// ——— Suma por encounter; parsea JSON de WCL; recorre diff 5→2
-async function buildForSpec(wclTok, blizzTok, className, specName, metric){
-  const z = await gqlWCL(Q_ZONE_ENCS, { zone:Number(RAID_ZONE_ID) }, wclTok);
-  const encounters = z?.worldData?.zone?.encounters || [];
-  if (!encounters.length) return [];
+// —— Resuelve zone: usa ID; si no tiene encounters, busca por nombre ZONE_NAME
+async function resolveZoneId(wclTok){
+  // intenta con el ID dado
+  try{
+    const z = await gqlWCL(Q_ZONE_ENCS, { zone:Number(RAID_ZONE_ID) }, wclTok);
+    const encs = z?.worldData?.zone?.encounters || [];
+    if (encs.length) return { id:Number(RAID_ZONE_ID), name:z.worldData.zone.name, encounters:encs };
+  }catch{}
+  // busca por nombre
+  const all = await gqlWCL(Q_ZONES, {}, wclTok);
+  const zones = all?.worldData?.zones || [];
+  const found = zones.find(z => String(z.name).toLowerCase().includes(String(ZONE_NAME).toLowerCase()));
+  if (!found) throw new Error("No se encontró zone por nombre: "+ZONE_NAME);
+  const z2 = await gqlWCL(Q_ZONE_ENCS, { zone: Number(found.id) }, wclTok);
+  const encs2 = z2?.worldData?.zone?.encounters || [];
+  if (!encs2.length) throw new Error("Zone sin encounters: "+found.id+" "+found.name);
+  console.log(`Zone resuelto: ${found.name} (#${found.id}) con ${encs2.length} encounters`);
+  return { id:Number(found.id), name:found.name, encounters:encs2 };
+}
 
+// —— calcula BiS por spec sumando rankings de cada encounter
+async function buildForSpec(wclTok, blizzTok, zone, className, specName, metric){
   for (const diff of [5,4,3,2]) {
     const freq = new Map();
 
-    for (const enc of encounters){
+    for (const enc of zone.encounters){
       let page = 1;
-      while (page <= 5) { // hasta 5 páginas por encuentro
+      while (page <= 5) {
         const d = await gqlWCL(Q_ENC_RANK, { enc:enc.id, className, specName, metric, diff, page }, wclTok);
         let raw = d?.worldData?.encounter?.characterRankings;
         try { if (typeof raw === "string") raw = JSON.parse(raw); } catch(e){ raw = null; }
         const resp = raw && typeof raw === "object" ? raw : { rankings:[], hasMorePages:false };
         const ranks = Array.isArray(resp.rankings) ? resp.rankings : [];
         if (!ranks.length) break;
-
         for (const r of ranks){
           for (const g of (r.gear || [])){
             const slot = SLOT_MAP.get(String(g.slot||"").toLowerCase());
@@ -159,13 +178,15 @@ async function buildForSpec(wclTok, blizzTok, className, specName, metric){
       const source = await sourceFor(itemId, blizzTok);
       out.push({ slot:s, id:itemId, source });
     }
-    if (out.length) return out; // listo para este spec
+    if (out.length) return out;
   }
   return [];
 }
 
 async function main(){
   const [wclTok, blizzTok] = await Promise.all([getTokenWCL(), getTokenBlizzard()]);
+  const zone = await resolveZoneId(wclTok);
+
   const data = {}, labels = {};
   for (const cl of CLASSES){
     data[cl.className] = {};
@@ -173,7 +194,7 @@ async function main(){
     for (const sp of cl.specs){
       labels[cl.className].specs[sp.specName] = sp.label;
       try{
-        const items = await buildForSpec(wclTok, blizzTok, cl.className, sp.specName, metricFor(sp.role));
+        const items = await buildForSpec(wclTok, blizzTok, zone, cl.className, sp.specName, metricFor(sp.role));
         console.log(`OK ${cl.className}/${sp.specName}: ${items.length} slots`);
         data[cl.className][sp.specName] = items;
       }catch(e){
