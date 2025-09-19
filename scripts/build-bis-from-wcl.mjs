@@ -9,9 +9,9 @@ import { URLSearchParams } from "node:url";
     Config general (editable)
     =========================== */
 // dificultad del raid: 5 = Mythic, 4 = Heroic
-const RAID_DIFFICULTY = Number(process.env.WCL_RAID_DIFFICULTY || 5);
+const RAID_DIFFICULTY = Number(process.env.WCL_RAID_DIFFICULTY || 4); // Cambiado a 4
 // páginas de rankings a leer por boss (1 página ~100 logs)
-const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 2);
+const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 20); // Cambiado a 20
 // timeframe: "Historical" suele ser más estable
 const TIMEFRAME = process.env.WCL_TIMEFRAME || "Historical";
 
