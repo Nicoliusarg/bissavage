@@ -33,20 +33,16 @@ jobs:
       - name: Build BiS feed (JSON + JS)
         run: npm run update
 
-      # Siempre corre; el script se auto-saltea si no hay secretos
+      # Genera wow-icons.js desde el CDN de Wowhead (sin API)
       - name: Build icons (static, no API)
         run: npm run icons
-        env:
-          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
-          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
-          BLIZZARD_REGION: us
-          BLIZZARD_LOCALE: es_MX
 
       # Sanity check: evita commitear un feed vacío
       - name: Validate feed
         run: |
           node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('./bis-feed.json','utf8'));if(!f?.data||!Object.keys(f.data).length){console.error('Feed vacío');process.exit(1)}"
           test -f ./bis-feed.js && echo "bis-feed.js OK"
+          test -f ./wow-icons.js && echo "wow-icons.js OK"
 
       - name: Commit updated feed & icons
         uses: stefanzweifel/git-auto-commit-action@v5
