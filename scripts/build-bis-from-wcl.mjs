@@ -75,20 +75,31 @@ const SLOT_MAP = {
 async function getToken() {
   const cid = process.env.WCL_CLIENT_ID;
   const sec = process.env.WCL_CLIENT_SECRET;
-  if(!cid || !sec) throw new Error("Faltan WCL_CLIENT_ID/SECRET");
+  if(!cid || !sec) {
+    warn("Faltan WCL_CLIENT_ID/SECRET");
+    return null;
+  }
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: cid,
     client_secret: sec
   });
-  const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
-  const j = await r.json();
-  if(!j.access_token) throw new Error("No WCL token");
-  return j.access_token;
+  try {
+    const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+    const j = await r.json();
+    if(!j.access_token) {
+      warn("No se pudo obtener el token de acceso de WCL. Respuesta de la API:", JSON.stringify(j));
+      return null;
+    }
+    return j.access_token;
+  } catch(e) {
+    warn("Fallo al obtener el token de WCL:", String(e).slice(0, 160));
+    return null;
+  }
 }
 
 async function gql(query, variables, token) {
@@ -103,11 +114,14 @@ async function gql(query, variables, token) {
   const text = await r.text();
   try {
     const j = JSON.parse(text);
-    if (j.errors) throw new Error(JSON.stringify(j.errors));
+    if (j.errors) {
+      warn("Error en la respuesta GraphQL:", JSON.stringify(j.errors));
+      throw new Error(JSON.stringify(j.errors));
+    }
     return j.data;
   } catch (e) {
     warn("Error al parsear JSON:", e.message);
-    warn("Respuesta completa de la API:", text.slice(0, 500) + "..."); // Limita el log para no saturar
+    warn("Respuesta completa de la API:", text.slice(0, 500) + "...");
     throw new Error(`Respuesta inválida de la API: ${e.message}`);
   }
 }
@@ -203,9 +217,13 @@ function sourceMplus(zoneName){ return { type:"mplus", instance:`${zoneName} (WC
 /* ===========================
     Main
     =========================== */
-try {
+async function main() {
   log("Iniciando la generación de BiS desde Warcraft Logs...");
   const token = await getToken();
+  if (!token) {
+    warn("No se pudo obtener el token de WCL. El script se detiene.");
+    return;
+  }
 
   // Inicializamos la estructura de datos
   const data = {};
@@ -329,7 +347,8 @@ try {
 
   await fs.writeFile("bis-feed.json", JSON.stringify(out, null, 2), "utf8");
   await fs.writeFile("bis-feed.js", `window.BIS_FEED=${JSON.stringify(out)};`, "utf8");
-
-} finally {
-  await fs.writeFile("build-log.txt", logMessages.join("\n"), "utf8");
 }
+
+main().finally(() => {
+  fs.writeFile("build-log.txt", logMessages.join("\n"), "utf8");
+});
