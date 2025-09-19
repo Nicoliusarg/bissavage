@@ -23,6 +23,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # >>> Hacemos rebase/sync AHORA, antes de generar archivos <<<
+      - name: Sync with origin/main
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -44,7 +50,7 @@ jobs:
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          # WCL_RAID_ZONE_ID: "99999"   # <- ponelo cuando veas el id correcto en el paso anterior
+          # WCL_RAID_ZONE_ID: "99999"   # <- completalo cuando tengas el zoneId
           WCL_RAID_DIFFICULTY: "4"
           WCL_TOP_PAGES: "1"
           WCL_TIMEFRAME: Historical
@@ -53,20 +59,11 @@ jobs:
       - name: Build icons (static, no API)
         run: "npm run icons"
 
-      # -------- VALIDACIÓN SIMPLE Y SÓLIDA --------
       - name: Validate feed
         run: |
           node scripts/validate-feed.mjs
           test -f bis-feed.js && echo "bis-feed.js OK"
           test -f wow-icons.js && echo "wow-icons.js OK"
-
-
-      - name: Rebase against latest main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git pull --rebase origin main
 
       - name: Commit updated feed & icons
         uses: stefanzweifel/git-auto-commit-action@v5
