@@ -8,10 +8,10 @@ import { URLSearchParams } from "node:url";
 /* ===========================
     Config general (editable)
     =========================== */
-// dificultad del raid: 5 = Mythic, 4 = Heroic
-const RAID_DIFFICULTY = Number(process.env.WCL_RAID_DIFFICULTY || 4); // Cambiado a 4
+// Dificultades a intentar si no se encuentran datos. El script probará en este orden.
+const RAID_DIFFICULTIES_TO_TRY = [4, 5, 3];
 // páginas de rankings a leer por boss (1 página ~100 logs)
-const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 20); // Cambiado a 20
+const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 20); 
 // timeframe: "Historical" suele ser más estable
 const TIMEFRAME = process.env.WCL_TIMEFRAME || "Historical";
 
@@ -161,7 +161,7 @@ function itemsFromTop(topPerSlot, tag){
   return Object.entries(topPerSlot).map(([slot,id])=> ({ slot, id, source: tag }));
 }
 
-function sourceRaid(){ return { type:"raid", instance:"Auto (WCL)", boss:"Top logs" }; }
+function sourceRaid(difficulty){ return { type:"raid", instance:`Auto (WCL, ${difficulty})`, boss:"Top logs" }; }
 function sourceMplus(){ return { type:"mplus", instance:"Auto (WCL)", boss:"Top logs" }; }
 
 /* ===========================
@@ -183,50 +183,69 @@ for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
 
 // === Obtener datos de RAID ===
 let raidZoneId = Number(process.env.WCL_RAID_ZONE_ID || 0);
-if (!raidZoneId) {
-  console.warn("No se encontró WCL_RAID_ZONE_ID. Buscando el más reciente...");
-  raidZoneId = await resolveRaidZoneId(token);
-}
 let raidEncounters = [];
-if (raidZoneId) {
-  try {
-    const d = await gql(Q_ZONE, { zoneId: raidZoneId }, token);
-    raidEncounters = d?.worldData?.zone?.encounters || [];
-  } catch(e) {
-    console.warn("Error obteniendo encounters de RAID:", String(e).slice(0,160));
+let raidDifficulty = 0;
+
+for (const diff of RAID_DIFFICULTIES_TO_TRY) {
+  if (!raidZoneId) {
+    console.warn("No se encontró WCL_RAID_ZONE_ID. Buscando el más reciente...");
+    raidZoneId = await resolveRaidZoneId(token);
   }
-}
-if (raidEncounters.length) {
-  for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
-    for (const spec of specs) {
-      const gathered = [];
-      const metric = metricFor(spec);
-      for (const enc of raidEncounters) {
-        for (let page=1; page<=TOP_PAGES; page++) {
-          try {
-            const res = await gql(Q_RANKINGS, {
-              encounterId: enc.id,
-              className: cls,
-              specName: spec,
-              page,
-              difficulty: RAID_DIFFICULTY,
-              metric,
-              timeframe: TIMEFRAME
-            }, token);
-            const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
-            if (rows.length) gathered.push(...rows);
-          } catch(e) {
-            console.warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
-          }
-        }
-      }
-      const top = mostUsedBySlot(gathered);
-      data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid())];
+  if (raidZoneId) {
+    try {
+      const d = await gql(Q_ZONE, { zoneId: raidZoneId }, token);
+      raidEncounters = d?.worldData?.zone?.encounters || [];
+    } catch(e) {
+      console.warn("Error obteniendo encounters de RAID:", String(e).slice(0,160));
     }
   }
-  console.log("OK: BiS de RAID procesado. zoneId =", raidZoneId, ", encounters =", raidEncounters.length);
+
+  if (raidEncounters.length) {
+    let foundData = false;
+    console.log(`Intentando buscar datos de raid en dificultad ${diff}...`);
+    for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
+      for (const spec of specs) {
+        const gathered = [];
+        const metric = metricFor(spec);
+        for (const enc of raidEncounters) {
+          for (let page=1; page<=TOP_PAGES; page++) {
+            try {
+              const res = await gql(Q_RANKINGS, {
+                encounterId: enc.id,
+                className: cls,
+                specName: spec,
+                page,
+                difficulty: diff, // Usando la dificultad actual del bucle
+                metric,
+                timeframe: TIMEFRAME
+              }, token);
+              const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
+              if (rows.length) {
+                gathered.push(...rows);
+                foundData = true;
+              }
+            } catch(e) {
+              console.warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+            }
+          }
+        }
+        if (gathered.length > 0) {
+          const top = mostUsedBySlot(gathered);
+          data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid(diff))];
+        }
+      }
+    }
+    if (foundData) {
+      raidDifficulty = diff;
+      break;
+    }
+  }
+}
+
+if (raidEncounters.length && raidDifficulty) {
+  console.log(`OK: BiS de RAID procesado con dificultad ${raidDifficulty}. zoneId =`, raidZoneId, ", encounters =", raidEncounters.length);
 } else {
-  console.warn("No se encontraron encounters de RAID. Saltando paso.");
+  console.warn("No se encontraron encounters de RAID o datos en ninguna dificultad. Saltando paso.");
 }
 
 // === Obtener datos de MÍTICAS+ ===
