@@ -34,7 +34,7 @@ jobs:
         run: npm run update
 
       # Siempre corre; el script se auto-saltea si no hay secretos
-      - name: Build icons (Blizzard)
+      - name: Build icons (static, no API)
         run: npm run icons
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
