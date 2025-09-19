@@ -80,9 +80,18 @@ async function gql(query, variables, token) {
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
     body: JSON.stringify({ query, variables })
   });
-  const j = await r.json();
-  if (j.errors) throw new Error(JSON.stringify(j.errors));
-  return j.data;
+
+  const text = await r.text();
+  try {
+    const j = JSON.parse(text);
+    if (j.errors) throw new Error(JSON.stringify(j.errors));
+    return j.data;
+  } catch (e) {
+    console.error("Error al parsear JSON:", e.message);
+    console.error("Respuesta completa de la API:");
+    console.error(text.slice(0, 500) + "..."); // Limita el log para no saturar
+    throw new Error(`Respuesta inválida de la API: ${e.message}`);
+  }
 }
 
 /* ===========================
