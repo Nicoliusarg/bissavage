@@ -1,53 +1,37 @@
-name: Build BiS feed
+name: Update BiS feed
+
 on:
+  push:
+    branches: [ main ]              # cuando edites YAML o HTML
+  workflow_dispatch:                 # correr a mano
   schedule:
-    - cron: '0 */6 * * *'   # cada 6 horas
-  workflow_dispatch: {}
+    - cron: "0 */6 * * *"           # cada 6 horas (opcional)
 
 permissions:
-  contents: write   # necesario para hacer commit/push
+  contents: write                   # para commitear con GITHUB_TOKEN
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          node-version: '20'
+          persist-credentials: true
 
-      # Habilita ES Modules para poder usar "import ..."
-      - name: Enable ES modules
-        run: echo '{"type":"module"}' > package.json
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Install deps
-        run: npm i node-fetch@3 cheerio@1
+        run: npm ci
 
-      - name: Update bis-feed.js
-        env:
-          # WCL v1 (si está, intenta logs)
-          WCL_V1_KEY: ${{ secrets.WCL_V1_KEY }}
+      - name: Build bis-feed.json
+        run: npm run update
 
-          # (Opcional) WCL v2: los dejamos por si a futuro volvés a v2
-          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
-          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-
-          # Blizzard Game Data (para mapear origen Raid/M+ / Crafteo)
-          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
-          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
-
-          # Config del feed
-          REGION: us
-          LOCALE: es_MX
-          SEASON_LABEL: "TWW S3"
-          RAID_ZONE_ID: '44'   # Manaforge Omega
-        run: node scripts/update-bis.js
-
-      - name: Commit feed
-        run: |
-          if [[ -n $(git status --porcelain) ]]; then
-            git config user.name "actions"; git config user.email "actions@github.com";
-            git add bis-feed.js;
-            git commit -m "Auto-update bis-feed.js";
-            git push;
-          fi
+      - name: Commit updated feed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update bis-feed.json [skip ci]"
+          file_pattern: bis-feed.json
