@@ -6,11 +6,11 @@
   <title>BiS por clase/especialización</title>
 
   <!-- Tooltips Wowhead -->
-  <script>const whTooltips = { colorLinks:true, iconizeLinks:true, renameLinks:true };</script>
-  <script src="https://wow.zamimg.com/widgets/power.js" defer></script>
+  <script>const whTooltips={colorLinks:true,iconizeLinks:true,renameLinks:true};</script>
+  <script src="https://wow.zamimg.com/widgets/power.js"></script>
+
+  <!-- CARGA EL FEED: importante, SIN defer -->
   <script src="./bis-feed.js"></script>
-
-
 
   <style>
     :root{ --bg:#0b0e14; --card:#11151c; --muted:#8aa1b1; --text:#e6eef4; --pill:#1a2330; }
@@ -36,15 +36,14 @@
     .controls{ display:flex; gap:8px; flex-wrap:wrap }
     .tag{ padding:8px 10px; border-radius:999px; border:1px solid #273141; background:#0f141c; font-size:12px; cursor:pointer; user-select:none }
     .tag.active{ border-color:#3b8ab8; box-shadow:0 0 0 2px rgba(60,140,190,.25) inset }
-    .warn{ background:#201c00; border:1px solid #534400; color:#ffec8b; padding:10px 12px; border-radius:10px; font-size:13px; margin-top:6px }
-    .error{ background:#2b1111; border:1px solid #5c1d1d; color:#ffb3b3; padding:10px 12px; border-radius:10px; font-size:13px; margin-top:6px; white-space:pre-wrap }
+    .error{ display:none; background:#2b1111; border:1px solid #5c1d1d; color:#ffb3b3; padding:10px 12px; border-radius:10px; font-size:13px; margin-top:6px; white-space:pre-wrap }
   </style>
 </head>
 <body>
 <header>
   <div class="wrap">
     <h1>BiS por clase/especialización</h1>
-    <div class="muted">Lee <code>bis-feed.json</code> si existe; si no, usa el feed incrustado.</div>
+    <div class="muted">Datos desde <code>bis-feed.js</code> · <span id="meta"></span></div>
     <div class="bar">
       <select id="classSelect" aria-label="Elegí clase"></select>
       <select id="specSelect" aria-label="Elegí especialización"></select>
@@ -55,58 +54,31 @@
         <span class="tag" data-filter="crafted">Crafteo</span>
       </div>
       <button id="refresh">Recargar</button>
-      <span class="muted" id="meta"></span>
     </div>
-    <div class="warn" id="note">No se encontró <code>bis-feed.json</code>. Usando el feed incrustado.</div>
-    <div class="error" id="err" style="display:none"></div>
+    <div class="error" id="err"></div>
   </div>
 </header>
 
 <main><div class="grid" id="slots"></div></main>
-<footer><div>Tooltips por Wowhead • HTML + JSON</div></footer>
-
-<!-- FEED INCRUSTADO: edítalo si querés -->
-<script id="bis-feed" type="application/json">
-{
-  "meta": { "season": "TWW S3", "updated": "inline" },
-  "labels": {
-    "Warrior": { "label": "Guerrero", "specs": { "Fury": "Furia" } },
-    "Hunter":  { "label": "Cazador",  "specs": { "Marksmanship": "Puntería" } }
-  },
-  "data": {
-    "Warrior": {
-      "Fury": [
-        { "slot": "twoHand",  "id": 34334,  "source": { "type": "raid",    "instance": "Ejemplo", "boss": "Jefe A" } },
-        { "slot": "trinket1", "id": 211515, "source": { "type": "mplus",   "dungeon": "Mazmorra X" } },
-        { "slot": "ring1",    "id": 178871, "source": { "type": "crafted", "profession": "Joyería" } }
-      ]
-    },
-    "Hunter": {
-      "Marksmanship": [
-        { "slot": "twoHand", "id": 19019,  "source": { "type": "raid",   "instance": "Ejemplo", "boss": "Jefe B" } },
-        { "slot": "trinket2","id": 204202, "source": { "type": "crafted","profession": "Ingeniería" } }
-      ]
-    }
-  }
-}
-</script>
+<footer><div>Tooltips por Wowhead • HTML + JS</div></footer>
 
 <script>
-const FEED_URL = './bis-feed.json'; // si está online, se usa este. Si falla, usa el inline.
-let DATA=null;
+/* === Datos (cargados por bis-feed.js) === */
+let DATA = window.BIS_FEED || null;
 
+/* === Utilidades/UI === */
 function el(tag, attrs={}, children=[]){
   const n=document.createElement(tag);
   for(const [k,v] of Object.entries(attrs)){
-    if(k==='class') n.className=v; else if(k==='html') n.innerHTML=v; else n.setAttribute(k,v);
+    if(k==='class') n.className=v;
+    else if(k==='html') n.innerHTML=v;
+    else n.setAttribute(k,v);
   }
   (Array.isArray(children)?children:[children]).filter(Boolean).forEach(c=>n.appendChild(typeof c==='string'?document.createTextNode(c):c));
   return n;
 }
-
 const SLOT_ORDER=['head','neck','shoulder','back','chest','wrist','hands','waist','legs','feet','ring1','ring2','trinket1','trinket2','weaponMain','weaponOff','twoHand'];
 const SLOT_LABEL={ head:'Cabeza',neck:'Collar',shoulder:'Hombros',back:'Capa',chest:'Pecho',wrist:'Muñecas',hands:'Manos',waist:'Cintura',legs:'Piernas',feet:'Pies',ring1:'Anillo 1',ring2:'Anillo 2',trinket1:'Abalorio 1',trinket2:'Abalorio 2',weaponMain:'Arma principal',weaponOff:'Arma secundaria',twoHand:'Arma de dos manos' };
-
 let currentClass=null,currentSpec=null,activeFilter='all';
 
 function srcPills(src){
@@ -123,10 +95,8 @@ function buildSelects(){
   classSel.innerHTML=''; specSel.innerHTML='';
 
   const classes=Object.keys(DATA.data||{}).sort();
-  if(!classes.length) throw new Error("DATA.data no tiene clases.");
-
   classes.forEach(c=>{
-    const label=(DATA.labels&&DATA.labels[c]&&DATA.labels[c].label)||c;
+    const label=(DATA.labels?.[c]?.label)||c;
     classSel.appendChild(el('option',{value:c},label));
   });
 
@@ -138,11 +108,11 @@ function buildSelects(){
     specSel.innerHTML='';
     const specKeys=Object.keys(DATA.data[currentClass]||{}).sort();
     specKeys.forEach(s=>{
-      const label=(DATA.labels&&DATA.labels[currentClass]&&DATA.labels[currentClass].specs&&DATA.labels[currentClass].specs[s])||s;
+      const label=(DATA.labels?.[currentClass]?.specs?.[s])||s;
       specSel.appendChild(el('option',{value:s},label));
     });
     const savedS=localStorage.getItem('bis_spec');
-    currentSpec=(savedS && DATA.data[currentClass][savedS])?savedS:specKeys[0];
+    currentSpec=(savedS && DATA.data[currentClass]?.[savedS])?savedS:specKeys[0];
     specSel.value=currentSpec;
   }
 
@@ -153,13 +123,13 @@ function buildSelects(){
 
 function render(){
   const grid=document.getElementById('slots'); grid.innerHTML='';
-  const items=(DATA.data[currentClass]&&DATA.data[currentClass][currentSpec])||[];
+  const items=(DATA.data[currentClass]?.[currentSpec])||[];
   const bySlot={}; for(const it of items){ (bySlot[it.slot]=bySlot[it.slot]||[]).push(it); }
 
   SLOT_ORDER.forEach(slot=>{
     const card=el('div',{class:'card'});
     card.appendChild(el('div',{class:'slot'},SLOT_LABEL[slot]||slot));
-    const arr=(bySlot[slot]||[]).filter(it=> activeFilter==='all'?true:(it.source&&it.source.type===activeFilter));
+    const arr=(bySlot[slot]||[]).filter(it=> activeFilter==='all'?true:(it.source?.type===activeFilter));
     if(!arr.length){ card.appendChild(el('div',{class:'empty'},'—')); grid.appendChild(card); return; }
     arr.forEach(it=>{
       const row=el('div',{class:'row'});
@@ -182,52 +152,23 @@ function bindFilters(){
   tags.forEach(t=>t.addEventListener('click',()=>set(t.dataset.filter)));
   set('all');
 }
-
 function saveState(){ localStorage.setItem('bis_class',currentClass); localStorage.setItem('bis_spec',currentSpec); }
 
-async function tryFetchExternal(){
-  const url = './bis-feed.json?v=' + Date.now(); // cache-buster
-  const res = await fetch(url, { cache:'no-store' });
-  if(!res.ok) throw new Error(`HTTP ${res.status} al cargar bis-feed.json`);
-  const json = await res.json();
-  if(!json || !json.data) throw new Error("El JSON externo no tiene la clave 'data'.");
-  return json;
-}
-
-function readInline(){
-  const raw = document.getElementById('bis-feed')?.textContent?.trim();
-  if(!raw) throw new Error('No hay feed incrustado');
-  const json = JSON.parse(raw);
-  json.meta = json.meta || {};
-  json.meta.updated = json.meta.updated || 'inline';
-  return json;
-}
-
-(async function init(){
+/* === Inicialización === */
+(function init(){
+  document.getElementById('refresh').addEventListener('click', ()=>location.reload());
   bindFilters();
-  document.getElementById('refresh').addEventListener('click',()=>location.reload());
-  const errBox=document.getElementById('err');
-  try{
-    // 1) intento leer el externo
-    DATA = await tryFetchExternal();
-    document.getElementById('note').style.display='none';
-  }catch(e1){
-    try{
-      // 2) si falla, uso el incrustado
-      DATA = readInline();
-      document.getElementById('note').style.display='block';
-    }catch(e2){
-      errBox.style.display='block';
-      errBox.textContent = 'No pude cargar el feed externo ni el incrustado.\n' +
-                           'Error externo: ' + e1.message + '\n' +
-                           'Error inline: ' + e2.message;
-      return;
-    }
+
+  if(!DATA || !DATA.data){
+    const err=document.getElementById('err');
+    err.style.display='block';
+    err.textContent='window.BIS_FEED no está definido. Verificá que bis-feed.js exista y se cargue sin errores.';
+    return;
   }
+
   buildSelects();
   render();
 })();
 </script>
 </body>
 </html>
-
