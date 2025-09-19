@@ -27,25 +27,29 @@ jobs:
           node-version: 20
 
       - name: Install deps
-        run: npm install --no-fund --no-audit
+        run: |
+          npm ci || npm install --no-fund --no-audit
 
-      # Genera bis-feed.json y bis-feed.js desde data/bis-source.yaml
-      - name: Build BiS feed (JSON + JS)
-        run: npm run update
+      # Genera bis-feed.* automáticamente desde Warcraft Logs (WCL)
+      - name: Build BiS feed automatically (WCL)
+        run: npm run auto:wcl
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
 
       # Genera wow-icons.js desde el CDN de Wowhead (sin API)
       - name: Build icons (static, no API)
         run: npm run icons
 
-      # Sanity check: evita commitear un feed vacío
+      # Sanity check: evita commitear algo roto
       - name: Validate feed
         run: |
-          node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('./bis-feed.json','utf8'));if(!f?.data||!Object.keys(f.data).length){console.error('Feed vacío');process.exit(1)}"
-          test -f ./bis-feed.js && echo "bis-feed.js OK"
-          test -f ./wow-icons.js && echo "wow-icons.js OK"
+          node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('bis-feed.json','utf8'));if(!f||!f.data||!Object.keys(f.data).length){console.error('Feed vacío o sin data');process.exit(1)};for(const c of Object.keys(f.data)){for(const s of Object.keys(f.data[c])){if(!Array.isArray(f.data[c][s])){console.error('Spec no es array:',c,s);process.exit(1)}}}"
+          test -f bis-feed.js && echo "bis-feed.js OK"
+          test -f wow-icons.js && echo "wow-icons.js OK"
 
       - name: Commit updated feed & icons
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: update BiS feed & icons [skip ci]"
+          commit_message: "chore: update BiS (WCL) & icons [skip ci]"
           file_pattern: "bis-feed.json bis-feed.js wow-icons.js"
