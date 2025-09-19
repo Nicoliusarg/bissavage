@@ -2,13 +2,18 @@ name: Update BiS feed
 
 on:
   push:
-    branches: [ main ]          # cuando edites YAML/HTML
-  workflow_dispatch:             # correr a mano
+    branches: [main]
+  workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"       # cada 6 horas (opcional)
+    - cron: "0 */6 * * *"   # cada 6 horas (UTC)
 
 permissions:
-  contents: write               # para commitear con el GITHUB_TOKEN
+  contents: write
+
+# evita que se superpongan ejecuciones (cron + push)
+concurrency:
+  group: update-bis
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,32 +21,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install deps
-        run: npm install
+        run: npm ci || npm install
 
-      - name: Build bis-feed.json
+      # Genera bis-feed.json y bis-feed.js
+      - name: Build BiS feed (JSON + JS)
         run: npm run update
 
-      - name: Commit updated feed
+      # (Opcional pero recomendado) Genera wow-icons.js con iconos oficiales
+      - name: Build icons (Blizzard)
+        run: npm run icons
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          # Cambiá si querés otra región/locale
+          BLIZZARD_REGION: us
+          BLIZZARD_LOCALE: es_MX
+
+      # Sanity check: evita commitear un feed vacío por error
+      - name: Validate feed
+        run: node -e "const f=require('./bis-feed.json'); if(!f?.data||!Object.keys(f.data).length){console.error('Feed vacío');process.exit(1)}"
+
+      - name: Commit updated feed & icons
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: update BiS feed [skip ci]"
-          file_pattern: bis-feed.json bis-feed.js
-
-          - name: Build icons (Blizzard)
-  run: npm run icons
-- name: Commit updated feed & icons
-  uses: stefanzweifel/git-auto-commit-action@v5
-  with:
-    commit_message: "chore: update BiS feed & icons [skip ci]"
-    file_pattern: bis-feed.json bis-feed.js wow-icons.js
-
-
+          commit_message: "chore: update BiS feed & icons [skip ci]"
+          file_pattern: "bis-feed.json bis-feed.js wow-icons.js"
