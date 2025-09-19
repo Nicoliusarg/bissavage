@@ -23,7 +23,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # >>> Sincronizamos AHORA, antes de generar archivos <<<
       - name: Sync with origin/main
         run: |
           git fetch origin main
@@ -52,9 +51,9 @@ jobs:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
           WCL_RAID_ZONE_ID: "44"
-          WCL_RAID_DIFFICULTY: "3" # CAMBIADO a Heroica, que tiene más datos
-          WCL_TOP_PAGES: "1"
-          WCL_TIMEFRAME: Historical
+          WCL_RAID_DIFFICULTY: "3"
+          WCL_TOP_PAGES: "10" # CAMBIADO a 10 páginas para más datos
+          WCL_TIMEFRAME: Current # CAMBIADO a "Current"
           WCL_REQ_DELAY_MS: "400"
 
       # PASO 2: OBTENER M+ BiS
@@ -63,10 +62,10 @@ jobs:
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          WCL_RAID_ZONE_ID: "45" # ID para Míticas+ Temporada 3
-          WCL_RAID_DIFFICULTY: "3" # CAMBIADO a Heroica, para asegurar datos
-          WCL_TOP_PAGES: "1"
-          WCL_TIMEFRAME: Historical
+          WCL_RAID_ZONE_ID: "45"
+          WCL_RAID_DIFFICULTY: "3"
+          WCL_TOP_PAGES: "10" # CAMBIADO a 10 páginas para más datos
+          WCL_TIMEFRAME: Current # CAMBIADO a "Current"
           WCL_REQ_DELAY_MS: "400"
 
       - name: Build icons (static, no API)
