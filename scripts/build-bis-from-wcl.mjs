@@ -1,47 +1,49 @@
 // scripts/build-bis-from-wcl.mjs
-// Genera bis-feed.json + bis-feed.js automáticamente a partir de rankings de Warcraft Logs
-// Estrategia: "más usado por los mejores logs" por slot (raid y m+)
+// Genera bis-feed.json + bis-feed.js automáticamente desde Warcraft Logs
+// Estrategia: ítem más usado por slot en top logs (por clase/spec)
 
 import * as fs from "node:fs/promises";
 
-// === CONFIG RÁPIDA ===
-// Ajusta el zoneId del raid actual y la dificultad (5 = Mythic, 4 = Heroic)
-const RAID_ZONE_ID = 42;           // TODO: poné el zoneId de la raid actual (WCL)
-const RAID_DIFFICULTY = 5;         // 5 Mythic, 4 Heroic
-const TOP_PAGES = 2;               // cuántas páginas de rankings traer por encounter/spec (1 página ~ 100)
-const LAST_DAYS = 14;              // ranking window (~ últimas 2 semanas)
+/* ===========================
+   Config general (editable)
+   =========================== */
+// dificultad del raid: 5 = Mythic, 4 = Heroic
+const RAID_DIFFICULTY = Number(process.env.WCL_RAID_DIFFICULTY || 5);
+// páginas de rankings a leer por boss (1 página ~100 logs)
+const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 2);
+// timeframe: "Historical" suele ser más estable
+const TIMEFRAME = process.env.WCL_TIMEFRAME || "Historical";
 
-// Especificaciones a cubrir automáticamente. Agregá/quitá las que quieras.
-const SPECS = [
-  { cls: "Warrior",       spec: "Fury" },
-  { cls: "Warrior",       spec: "Arms" },
-  { cls: "Paladin",       spec: "Retribution" },
-  { cls: "Hunter",        spec: "Marksmanship" },
-  { cls: "Hunter",        spec: "Beast Mastery" },
-  { cls: "Hunter",        spec: "Survival" },
-  { cls: "Rogue",         spec: "Assassination" },
-  { cls: "Rogue",         spec: "Outlaw" },
-  { cls: "Rogue",         spec: "Subtlety" },
-  { cls: "Priest",        spec: "Shadow" },
-  { cls: "Death Knight",  spec: "Unholy" },
-  { cls: "Death Knight",  spec: "Frost" },
-  { cls: "Shaman",        spec: "Elemental" },
-  { cls: "Shaman",        spec: "Enhancement" },
-  { cls: "Mage",          spec: "Fire" },
-  { cls: "Mage",          spec: "Arcane" },
-  { cls: "Mage",          spec: "Frost" },
-  { cls: "Warlock",       spec: "Affliction" },
-  { cls: "Warlock",       spec: "Demonology" },
-  { cls: "Warlock",       spec: "Destruction" },
-  { cls: "Monk",          spec: "Windwalker" },
-  { cls: "Druid",         spec: "Balance" },
-  { cls: "Druid",         spec: "Feral" },
-  { cls: "Demon Hunter",  spec: "Havoc" },
-  { cls: "Evoker",        spec: "Augmentation" },
-  { cls: "Evoker",        spec: "Devastation" }
-];
+/* ===========================
+   Especificaciones (todas)
+   =========================== */
+const SPECS_BY_CLASS = {
+  "Death Knight": ["Blood","Frost","Unholy"],
+  "Demon Hunter": ["Havoc","Vengeance"],
+  "Druid": ["Balance","Feral","Guardian","Restoration"],
+  "Evoker": ["Augmentation","Devastation","Preservation"],
+  "Hunter": ["Beast Mastery","Marksmanship","Survival"],
+  "Mage": ["Arcane","Fire","Frost"],
+  "Monk": ["Brewmaster","Mistweaver","Windwalker"],
+  "Paladin": ["Holy","Protection","Retribution"],
+  "Priest": ["Discipline","Holy","Shadow"],
+  "Rogue": ["Assassination","Outlaw","Subtlety"],
+  "Shaman": ["Elemental","Enhancement","Restoration"],
+  "Warlock": ["Affliction","Demonology","Destruction"],
+  "Warrior": ["Arms","Fury","Protection"],
+};
 
-// Slots de salida que usa tu front
+// rol -> métrica para WCL
+const HEALER_SPECS = new Set([
+  "Restoration","Holy","Discipline","Mistweaver","Preservation"
+]);
+function metricFor(specName){
+  return HEALER_SPECS.has(specName) ? "hps" : "dps";
+}
+
+/* ===========================
+   Mapeo de slots → front
+   =========================== */
 const SLOT_MAP = {
   HEAD: "head", NECK: "neck", SHOULDERS: "shoulder", BACK: "back", CHEST: "chest",
   WRISTS: "wrist", HANDS: "hands", WAIST: "waist", LEGS: "legs", FEET: "feet",
@@ -49,21 +51,26 @@ const SLOT_MAP = {
   MAIN_HAND: "weaponMain", OFF_HAND: "weaponOff", TWO_HAND: "twoHand"
 };
 
-// --- helpers OAuth/GraphQL ---
+/* ===========================
+   Helpers OAuth/GraphQL WCL
+   =========================== */
 async function getToken() {
   const cid = process.env.WCL_CLIENT_ID;
   const sec = process.env.WCL_CLIENT_SECRET;
+  if(!cid || !sec) throw new Error("Faltan WCL_CLIENT_ID/SECRET");
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: cid,
     client_secret: sec
   });
   const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
   });
-  const t = await r.json();
-  if (!t.access_token) throw new Error("No WCL token");
-  return t.access_token;
+  const j = await r.json();
+  if(!j.access_token) throw new Error("No WCL token");
+  return j.access_token;
 }
 
 async function gql(query, variables, token) {
@@ -77,130 +84,150 @@ async function gql(query, variables, token) {
   return j.data;
 }
 
-// Encuentros de una zona (raid) — para iterar todos los bosses
-const Q_ZONE = `
-query($zoneId:Int!){
+/* ===========================
+   Descubrimiento del raid
+   =========================== */
+// lista de zonas -> elijo la más reciente con encuentros
+const Q_ZONES = `query{
+  worldData {
+    zones { id name encounters { id name } }
+  }
+}`;
+
+const Q_ZONE = `query($zoneId:Int!){
   worldData { zone(id:$zoneId){ encounters { id name } } }
 }`;
 
-// Rankings por encounter/clase/spec
-// IMPORTANTE: el shape exacto de 'rankings' puede variar por tier; si cambia,
-// ajustamos aquí los campos. Muchos tiers exponen 'rankings.rankings' con 'gear' o 'characterGear'.
+async function resolveRaidZoneId(token){
+  // si te pasan uno por env, usalo
+  const fromEnv = Number(process.env.WCL_RAID_ZONE_ID || 0);
+  if (fromEnv) return fromEnv;
+  try{
+    const d = await gql(Q_ZONES, {}, token);
+    const zones = d?.worldData?.zones || [];
+    const withBosses = zones.filter(z => (z.encounters||[]).length>0);
+    const latest = withBosses.sort((a,b)=> b.id - a.id)[0];
+    if(latest) return latest.id;
+  }catch(e){
+    console.warn("No pude listar zonas:", String(e).slice(0,160));
+  }
+  return 0; // si 0, luego fall-back igual generará estructura vacía
+}
+
+/* ===========================
+   Rankings y gear por boss
+   =========================== */
 const Q_RANKINGS = `
 query($encounterId:Int!,$className:String!,$specName:String!,$page:Int!,$difficulty:Int!,$metric:MetricType!,$timeframe:RankingTimeRangeType!){
   worldData {
     encounter(id:$encounterId) {
-      characterRankings(
-        className:$className,
-        specName:$specName,
-        page:$page,
-        difficulty:$difficulty,
-        metric:$metric,
-        timeframe:$timeframe
-      ) {
+      characterRankings(className:$className, specName:$specName, page:$page, difficulty:$difficulty, metric:$metric, timeframe:$timeframe) {
         rankings {
-          // los nombres exactos de campo varían; intentamos cubrir ambos
-          gear { id slot }           # algunos tiers devuelven 'gear'
-          characterGear { id slot }  # otros devuelven 'characterGear'
+          gear { id slot }           # algunos tiers
+          characterGear { id slot }  # otros tiers
         }
       }
     }
   }
 }`;
 
-// Cuenta ocurrencias por slot -> ítem más frecuente
-function mostUsedBySlot(allEntries) {
-  const freq = {}; // slot -> itemId -> count
-  for (const g of allEntries) {
-    const arr = (g.gear || g.characterGear || []);
-    for (const it of arr) {
-      const slot = SLOT_MAP[it.slot] || null;
-      if (!slot) continue;
+// cuenta ocurrencias por slot y devuelve el id más frecuente
+function mostUsedBySlot(entries) {
+  const freq = {}; // slot -> id -> count
+  for (const row of entries) {
+    const gear = row?.gear || row?.characterGear || [];
+    for (const it of gear) {
+      const slotKey = SLOT_MAP[it.slot] || null;
+      if (!slotKey) continue;
       const id = Number(it.id);
-      freq[slot] = freq[slot] || {};
-      freq[slot][id] = (freq[slot][id] || 0) + 1;
+      if (!id) continue;
+      (freq[slotKey] ||= {})[id] = (freq[slotKey][id] || 0) + 1;
     }
   }
   const top = {};
   for (const [slot, ids] of Object.entries(freq)) {
-    let bestId = null, bestCount = -1;
+    let bestId=null, bestCount=-1;
     for (const [idStr, count] of Object.entries(ids)) {
       const id = Number(idStr);
-      if (count > bestCount) { bestCount = count; bestId = id; }
+      if (count > bestCount) { bestCount=count; bestId=id; }
     }
     if (bestId) top[slot] = bestId;
   }
   return top;
 }
 
-function asItems(topPerSlot, sourceTag) {
-  const out = [];
-  for (const [slot, id] of Object.entries(topPerSlot)) {
-    out.push({ slot, id, source: sourceTag });
-  }
-  return out;
+function itemsFromTop(topPerSlot, tag){
+  return Object.entries(topPerSlot).map(([slot,id])=> ({ slot, id, source: tag }));
 }
 
-function sourceRaid()   { return { type: "raid",  instance: "Auto (WCL)", boss: "Top logs" }; }
-function sourceMplus()  { return { type: "mplus", dungeon: "Auto (WCL)" }; }
+function sourceRaid(){ return { type:"raid", instance:"Auto (WCL)", boss:"Top logs" }; }
 
-// principal
+/* ===========================
+   Main
+   =========================== */
 const token = await getToken();
+let zoneId = await resolveRaidZoneId(token);
+if (!zoneId) {
+  console.warn("No pude resolver zoneId automáticamente. Podés setear WCL_RAID_ZONE_ID en el workflow.");
+}
 
-// 1) Recupero encounters del raid
-const zone = await gql(Q_ZONE, { zoneId: RAID_ZONE_ID }, token);
-const encounters = zone.worldData.zone?.encounters || [];
-if (!encounters.length) console.warn("WCL: no encounters en zoneId", RAID_ZONE_ID);
+// fetch encounters
+let encounters = [];
+if (zoneId) {
+  try {
+    const d = await gql(Q_ZONE, { zoneId }, token);
+    encounters = d?.worldData?.zone?.encounters || [];
+  } catch(e) {
+    console.warn("Error obteniendo encounters:", String(e).slice(0,160));
+  }
+}
 
-// 2) Armo estructura de salida
 const data = {};
-for (const { cls, spec } of SPECS) data[cls] = data[cls] || {}, data[cls][spec] = [];
+const labels = {};
+for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
+  labels[cls] = { label: cls, specs: {} };
+  data[cls] = {};
+  for (const spec of specs) {
+    labels[cls].specs[spec] = spec;
+    data[cls][spec] = [];
 
-// 3) Para cada spec: agrego BiS por popularidad en RAID
-for (const { cls, spec } of SPECS) {
-  const gathered = [];
-  for (const enc of encounters) {
-    for (let page = 1; page <= TOP_PAGES; page++) {
-      try {
-        const d = await gql(Q_RANKINGS, {
-          encounterId: enc.id,
-          className: cls,
-          specName: spec,
-          page,
-          difficulty: RAID_DIFFICULTY,
-          metric: "dps",
-          timeframe: "Historical" // o "Today","Week","Month" según prefieras
-        }, token);
-        const rows = d.worldData.encounter?.characterRankings?.rankings || [];
-        gathered.push(...rows);
-      } catch (e) {
-        // si falla para algún boss/tier, seguimos
-        console.warn(`WCL fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+    if (!encounters.length) continue; // sin raid resuelto, dejamos vacío
+
+    const gathered = [];
+    const metric = metricFor(spec);
+    for (const enc of encounters) {
+      for (let page=1; page<=TOP_PAGES; page++) {
+        try {
+          const res = await gql(Q_RANKINGS, {
+            encounterId: enc.id,
+            className: cls,
+            specName: spec,
+            page,
+            difficulty: RAID_DIFFICULTY,
+            metric,
+            timeframe: TIMEFRAME
+          }, token);
+          const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
+          if (rows.length) gathered.push(...rows);
+        } catch(e) {
+          console.warn(`Rankings fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+        }
       }
     }
+
+    const top = mostUsedBySlot(gathered);
+    const items = itemsFromTop(top, sourceRaid());
+    data[cls][spec] = items;
   }
-  const top = mostUsedBySlot(gathered);
-  const items = asItems(top, sourceRaid());
-  data[cls][spec] = items;
 }
 
-// 4) (Opcional) Podés clonar el bloque anterior para M+ usando otra query del endpoint v1/v2 de WCL
-//     y combinar resultados con etiquetas diferentes (source: {type:"mplus", dungeon:"Auto (WCL)"}).
-
-// 5) Labels simples (podés re-usar los que ya tenés, o generar básicos)
-const labels = {};
-for (const { cls, spec } of SPECS) {
-  labels[cls] = labels[cls] || { label: cls, specs: {} };
-  labels[cls].specs[spec] = spec;
-}
-
+// meta + salida
 const out = {
   meta: { season: "Auto (WCL)", updated: new Date().toISOString() },
   labels,
   data
 };
 
-// 6) Escribo feed final para el front (igual que hoy)
 await fs.writeFile("bis-feed.json", JSON.stringify(out, null, 2), "utf8");
 await fs.writeFile("bis-feed.js", `window.BIS_FEED=${JSON.stringify(out)};`, "utf8");
-console.log("✔ BiS auto (WCL) generado");
+console.log("OK: BiS (WCL) generado. zoneId =", zoneId, ", encounters =", encounters.length);
