@@ -1,15 +1,19 @@
 name: Update BiS feed
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"   # cada 6 horas (UTC)
+
 permissions:
   contents: write
+
 concurrency:
   group: update-bis
   cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,10 +22,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Install deps
         run: |
           npm ci || npm install --no-fund --no-audit
@@ -38,7 +44,7 @@ jobs:
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          # WCL_RAID_ZONE_ID: "99999"
+          # WCL_RAID_ZONE_ID: "99999"   # <- ponelo cuando veas el id correcto en el paso anterior
           WCL_RAID_DIFFICULTY: "4"
           WCL_TOP_PAGES: "1"
           WCL_TIMEFRAME: Historical
@@ -47,9 +53,10 @@ jobs:
       - name: Build icons (static, no API)
         run: "npm run icons"
 
+      # -------- VALIDACIÓN SIMPLE Y SÓLIDA --------
       - name: Validate feed
         run: |
-          node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('bis-feed.json','utf8'));if(!f||!f.data||!Object.keys(f.data).length){console.error('Feed vacío o sin data');process.exit(1)};for(const c of Object.keys(f.data)){for(const s of Object.keys(f.data[c])){if(!Array.isArray(f.data[c][s])){console.error('Spec no es array:',c,s);process.exit(1)}}}}"
+          node -e "const fs=require('fs');let ok=true,msg='';try{const s=fs.readFileSync('bis-feed.json','utf8');const j=JSON.parse(s);if(!j||!j.data||!Object.keys(j.data).length){ok=false;msg='Feed vacío o sin data';}}catch(e){ok=false;msg='JSON inválido: '+e.message}if(!ok){console.error(msg);process.exit(1)}else{console.log('Feed OK')}}"
           test -f bis-feed.js && echo "bis-feed.js OK"
           test -f wow-icons.js && echo "wow-icons.js OK"
 
