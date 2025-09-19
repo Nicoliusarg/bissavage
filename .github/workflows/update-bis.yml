@@ -30,18 +30,31 @@ jobs:
         run: |
           npm ci || npm install --no-fund --no-audit
 
-      # Genera bis-feed.* automáticamente desde Warcraft Logs (WCL)
+      # === DEBUG: listar zonas de WCL (solo cuando lo ejecutás manualmente) ===
+      - name: Debug: dump WCL zones
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/wcl-zones.mjs
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+
+      # Genera bis-feed.* automáticamente desde Warcraft Logs
       - name: Build BiS feed automatically (WCL)
         run: npm run auto:wcl
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+          # (por ahora dejalo vacío, lo completamos en el PASO 4)
+          # WCL_RAID_ZONE_ID: 99999
+          WCL_RAID_DIFFICULTY: 4
+          WCL_TOP_PAGES: 1
+          WCL_TIMEFRAME: Historical
+          WCL_REQ_DELAY_MS: 400
 
-      # Genera wow-icons.js desde el CDN de Wowhead (sin API)
+      # Íconos estáticos (Wowhead)
       - name: Build icons (static, no API)
         run: npm run icons
 
-      # Sanity check: evita commitear algo roto
       - name: Validate feed
         run: |
           node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('bis-feed.json','utf8'));if(!f||!f.data||!Object.keys(f.data).length){console.error('Feed vacío o sin data');process.exit(1)};for(const c of Object.keys(f.data)){for(const s of Object.keys(f.data[c])){if(!Array.isArray(f.data[c][s])){console.error('Spec no es array:',c,s);process.exit(1)}}}"
