@@ -26,29 +26,15 @@ jobs:
         with:
           node-version: 20
 
-      # --- Diagnóstico útil ---
-      - name: Show Node/npm versions
-        run: |
-          node -v
-          npm -v
-          echo "PWD=$(pwd)"
-          ls -la
-
-      # Instala deps normales (sin lockfile)
       - name: Install deps
         run: npm install --no-fund --no-audit
-
-      # Asegura que 'yaml' exista (si no estaba en package.json la instala)
-      - name: Ensure yaml dependency
-        run: npm ls yaml || npm install yaml@^2 --no-fund --no-audit
 
       # Genera bis-feed.json y bis-feed.js desde data/bis-source.yaml
       - name: Build BiS feed (JSON + JS)
         run: npm run update
 
-      # (Opcional) Genera wow-icons.js desde Blizzard si hay secrets
+      # Siempre corre; el script se auto-saltea si no hay secretos
       - name: Build icons (Blizzard)
-        if: ${{ secrets.BLIZZARD_CLIENT_ID && secrets.BLIZZARD_CLIENT_SECRET }}
         run: npm run icons
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
@@ -56,7 +42,7 @@ jobs:
           BLIZZARD_REGION: us
           BLIZZARD_LOCALE: es_MX
 
-      # Sanity check para no commitear un feed vacío
+      # Sanity check: evita commitear un feed vacío
       - name: Validate feed
         run: |
           node -e "const fs=require('fs');const f=JSON.parse(fs.readFileSync('./bis-feed.json','utf8'));if(!f?.data||!Object.keys(f.data).length){console.error('Feed vacío');process.exit(1)}"
