@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BiS por clase/especialización</title>
 
-  <!-- Tooltips Wowhead -->
+  <!-- Wowhead tooltips -->
   <script>const whTooltips={colorLinks:true,iconizeLinks:true,renameLinks:true};</script>
   <script src="https://wow.zamimg.com/widgets/power.js"></script>
 
-  <!-- CARGA EL FEED: importante, SIN defer -->
+  <!-- FEEDS (en este orden): primero BiS, luego íconos de Blizzard -->
   <script src="./bis-feed.js"></script>
+  <script src="./wow-icons.js"></script>
 
   <style>
     :root{ --bg:#0b0e14; --card:#11151c; --muted:#8aa1b1; --text:#e6eef4; --pill:#1a2330; }
@@ -37,6 +38,12 @@
     .tag{ padding:8px 10px; border-radius:999px; border:1px solid #273141; background:#0f141c; font-size:12px; cursor:pointer; user-select:none }
     .tag.active{ border-color:#3b8ab8; box-shadow:0 0 0 2px rgba(60,140,190,.25) inset }
     .error{ display:none; background:#2b1111; border:1px solid #5c1d1d; color:#ffb3b3; padding:10px 12px; border-radius:10px; font-size:13px; margin-top:6px; white-space:pre-wrap }
+
+    /* --- barra de íconos de clases --- */
+    .iconsbar{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 }
+    .icbtn{ display:flex; align-items:center; gap:8px; background:#0f141c; border:1px solid #273141; color:#e6eef4; padding:6px 10px; border-radius:999px; cursor:pointer }
+    .icbtn img{ width:18px; height:18px; border-radius:50% }
+    .icbtn.active{ outline:2px solid rgba(124,211,255,.25) }
   </style>
 </head>
 <body>
@@ -44,6 +51,10 @@
   <div class="wrap">
     <h1>BiS por clase/especialización</h1>
     <div class="muted">Datos desde <code>bis-feed.js</code> · <span id="meta"></span></div>
+
+    <!-- Barra de íconos de CLASES -->
+    <div id="classIcons" class="iconsbar"></div>
+
     <div class="bar">
       <select id="classSelect" aria-label="Elegí clase"></select>
       <select id="specSelect" aria-label="Elegí especialización"></select>
@@ -81,6 +92,13 @@ const SLOT_ORDER=['head','neck','shoulder','back','chest','wrist','hands','waist
 const SLOT_LABEL={ head:'Cabeza',neck:'Collar',shoulder:'Hombros',back:'Capa',chest:'Pecho',wrist:'Muñecas',hands:'Manos',waist:'Cintura',legs:'Piernas',feet:'Pies',ring1:'Anillo 1',ring2:'Anillo 2',trinket1:'Abalorio 1',trinket2:'Abalorio 2',weaponMain:'Arma principal',weaponOff:'Arma secundaria',twoHand:'Arma de dos manos' };
 let currentClass=null,currentSpec=null,activeFilter='all';
 
+/* Mapeo clase → ID oficial de Blizzard (para WOW_ICONS) */
+const CLASS_ID_BY_KEY={
+  "Warrior":1,"Paladin":2,"Hunter":3,"Rogue":4,"Priest":5,
+  "Death Knight":6,"Shaman":7,"Mage":8,"Warlock":9,"Monk":10,
+  "Druid":11,"Demon Hunter":12,"Evoker":13
+};
+
 function srcPills(src){
   if(!src) return [];
   if(src.type==='raid')   return [el('span',{class:'pill'},`${src.instance||'Raid'}${src.boss?' — '+src.boss:''}`)];
@@ -116,9 +134,49 @@ function buildSelects(){
     specSel.value=currentSpec;
   }
 
-  classSel.addEventListener('change',()=>{ currentClass=classSel.value; fillSpec(); render(); saveState(); });
+  classSel.addEventListener('change',()=>{ currentClass=classSel.value; fillSpec(); render(); saveState(); renderClassIcons(); });
   specSel.addEventListener('change', ()=>{ currentSpec=specSel.value; render(); saveState(); });
+
   fillSpec();
+}
+
+/* --- barra de íconos de clase (usa window.WOW_ICONS generada desde Blizzard) --- */
+function renderClassIcons(){
+  const box=document.getElementById('classIcons');
+  if(!box) return;
+  const iconData = window.WOW_ICONS?.classes || {};
+  box.innerHTML='';
+
+  const classes=Object.keys(DATA.data||{}).sort();
+  classes.forEach(k=>{
+    const id = CLASS_ID_BY_KEY[k];
+    const ic = iconData[id]?.icon || '';       // URL oficial
+    const label = (DATA.labels?.[k]?.label) || k;
+
+    const btn=document.createElement('button');
+    btn.className='icbtn' + (k===currentClass ? ' active':'');
+    btn.innerHTML = (ic? `<img src="${ic}" alt="">` : '') + label;
+
+    btn.onclick=()=>{
+      if(k===currentClass) return;
+      currentClass=k;
+      // actualizar selects
+      const cSel=document.getElementById('classSelect');
+      const sSel=document.getElementById('specSelect');
+      cSel.value=k;
+      sSel.innerHTML='';
+      Object.keys(DATA.data[k]).sort().forEach(s=>{
+        const lbl=(DATA.labels?.[k]?.specs?.[s])||s;
+        sSel.appendChild(new Option(lbl, s));
+      });
+      currentSpec=sSel.value;
+      saveState();
+      render();
+      renderClassIcons(); // refresca active
+    };
+
+    box.appendChild(btn);
+  });
 }
 
 function render(){
@@ -167,6 +225,7 @@ function saveState(){ localStorage.setItem('bis_class',currentClass); localStora
   }
 
   buildSelects();
+  renderClassIcons();   // <- NUEVO
   render();
 })();
 </script>
