@@ -5,7 +5,7 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # cada 6 horas (UTC)
+    - cron: "0 */6 * * *" # cada 6 horas (UTC)
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # >>> Hacemos rebase/sync AHORA, antes de generar archivos <<<
+      # >>> Sincronizamos AHORA, antes de generar archivos <<<
       - name: Sync with origin/main
         run: |
           git fetch origin main
@@ -45,13 +45,26 @@ jobs:
         run: |
           node -e "const UA='bissavage/1.0';(async()=>{try{if(!process.env.WCL_CLIENT_ID||!process.env.WCL_CLIENT_SECRET){console.log('WCL secrets vacíos: salteando');process.exit(0)};const p=new URLSearchParams({grant_type:'client_credentials',client_id:process.env.WCL_CLIENT_ID,client_secret:process.env.WCL_CLIENT_SECRET});const rt=await fetch('https://www.warcraftlogs.com/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA},body:p});const tok=await rt.json();if(!tok.access_token){console.log('No token');process.exit(0)};const q='query{ worldData { zones { id name encounters { id name } } } }';const rq=await fetch('https://www.warcraftlogs.com/api/v2/client',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok.access_token,'User-Agent':UA},body:JSON.stringify({query:q,variables:{}})});const data=await rq.json();const zones=(data?.data?.worldData?.zones||[]).filter(z=>(z.encounters||[]).length>0).sort((a,b)=>b.id-a.id);console.log('=== ZONAS CON BOSSES (zoneId — nombre — #encounters) ===');for(const z of zones){console.log(z.id+' — '+z.name+' — '+z.encounters.length)};console.log('TIP: setea WCL_RAID_ZONE_ID con el id del tier actual.');}catch(e){console.log('debug error:',e.message)}})();"
 
-      - name: Build BiS feed automatically (WCL)
+      # PASO 1: OBTENER RAID BiS
+      - name: Build Raid BiS feed (WCL)
         run: "npm run auto:wcl"
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          WCL_RAID_ZONE_ID: "44"   # <- completalo cuando tengas el zoneId
-          WCL_RAID_DIFFICULTY: "4"
+          WCL_RAID_ZONE_ID: "44"
+          WCL_RAID_DIFFICULTY: "3" # CAMBIADO a Heroica, que tiene más datos
+          WCL_TOP_PAGES: "1"
+          WCL_TIMEFRAME: Historical
+          WCL_REQ_DELAY_MS: "400"
+
+      # PASO 2: OBTENER M+ BiS
+      - name: Build M+ BiS feed (WCL)
+        run: "npm run auto:wcl"
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+          WCL_RAID_ZONE_ID: "45" # ID para Míticas+ Temporada 3
+          WCL_RAID_DIFFICULTY: "3" # CAMBIADO a Heroica, para asegurar datos
           WCL_TOP_PAGES: "1"
           WCL_TIMEFRAME: Historical
           WCL_REQ_DELAY_MS: "400"
