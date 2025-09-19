@@ -1,28 +1,79 @@
 {
   "meta": {
     "season": "Auto (WCL)",
-    "updated": "2025-09-19T18:16:01.033Z"
+    "updated": "2025-09-19T20:56:14.372Z"
   },
   "labels": {
-    "Warrior": {
-      "label": "Warrior",
+    "Death Knight": {
+      "label": "Death Knight",
       "specs": {
-        "Fury": "Fury",
-        "Arms": "Arms"
+        "Blood": "Blood",
+        "Frost": "Frost",
+        "Unholy": "Unholy"
       }
     },
-    "Paladin": {
-      "label": "Paladin",
+    "Demon Hunter": {
+      "label": "Demon Hunter",
       "specs": {
-        "Retribution": "Retribution"
+        "Havoc": "Havoc",
+        "Vengeance": "Vengeance"
+      }
+    },
+    "Druid": {
+      "label": "Druid",
+      "specs": {
+        "Balance": "Balance",
+        "Feral": "Feral",
+        "Guardian": "Guardian",
+        "Restoration": "Restoration"
+      }
+    },
+    "Evoker": {
+      "label": "Evoker",
+      "specs": {
+        "Augmentation": "Augmentation",
+        "Devastation": "Devastation",
+        "Preservation": "Preservation"
       }
     },
     "Hunter": {
       "label": "Hunter",
       "specs": {
-        "Marksmanship": "Marksmanship",
         "Beast Mastery": "Beast Mastery",
+        "Marksmanship": "Marksmanship",
         "Survival": "Survival"
+      }
+    },
+    "Mage": {
+      "label": "Mage",
+      "specs": {
+        "Arcane": "Arcane",
+        "Fire": "Fire",
+        "Frost": "Frost"
+      }
+    },
+    "Monk": {
+      "label": "Monk",
+      "specs": {
+        "Brewmaster": "Brewmaster",
+        "Mistweaver": "Mistweaver",
+        "Windwalker": "Windwalker"
+      }
+    },
+    "Paladin": {
+      "label": "Paladin",
+      "specs": {
+        "Holy": "Holy",
+        "Protection": "Protection",
+        "Retribution": "Retribution"
+      }
+    },
+    "Priest": {
+      "label": "Priest",
+      "specs": {
+        "Discipline": "Discipline",
+        "Holy": "Holy",
+        "Shadow": "Shadow"
       }
     },
     "Rogue": {
@@ -33,32 +84,12 @@
         "Subtlety": "Subtlety"
       }
     },
-    "Priest": {
-      "label": "Priest",
-      "specs": {
-        "Shadow": "Shadow"
-      }
-    },
-    "Death Knight": {
-      "label": "Death Knight",
-      "specs": {
-        "Unholy": "Unholy",
-        "Frost": "Frost"
-      }
-    },
     "Shaman": {
       "label": "Shaman",
       "specs": {
         "Elemental": "Elemental",
-        "Enhancement": "Enhancement"
-      }
-    },
-    "Mage": {
-      "label": "Mage",
-      "specs": {
-        "Fire": "Fire",
-        "Arcane": "Arcane",
-        "Frost": "Frost"
+        "Enhancement": "Enhancement",
+        "Restoration": "Restoration"
       }
     },
     "Warlock": {
@@ -69,85 +100,80 @@
         "Destruction": "Destruction"
       }
     },
-    "Monk": {
-      "label": "Monk",
+    "Warrior": {
+      "label": "Warrior",
       "specs": {
-        "Windwalker": "Windwalker"
-      }
-    },
-    "Druid": {
-      "label": "Druid",
-      "specs": {
-        "Balance": "Balance",
-        "Feral": "Feral"
-      }
-    },
-    "Demon Hunter": {
-      "label": "Demon Hunter",
-      "specs": {
-        "Havoc": "Havoc"
-      }
-    },
-    "Evoker": {
-      "label": "Evoker",
-      "specs": {
-        "Augmentation": "Augmentation",
-        "Devastation": "Devastation"
+        "Arms": "Arms",
+        "Fury": "Fury",
+        "Protection": "Protection"
       }
     }
   },
   "data": {
-    "Warrior": {
-      "Fury": [],
-      "Arms": []
+    "Death Knight": {
+      "Blood": [],
+      "Frost": [],
+      "Unholy": []
     },
-    "Paladin": {
-      "Retribution": []
+    "Demon Hunter": {
+      "Havoc": [],
+      "Vengeance": []
+    },
+    "Druid": {
+      "Balance": [],
+      "Feral": [],
+      "Guardian": [],
+      "Restoration": []
+    },
+    "Evoker": {
+      "Augmentation": [],
+      "Devastation": [],
+      "Preservation": []
     },
     "Hunter": {
-      "Marksmanship": [],
       "Beast Mastery": [],
+      "Marksmanship": [],
       "Survival": []
+    },
+    "Mage": {
+      "Arcane": [],
+      "Fire": [],
+      "Frost": []
+    },
+    "Monk": {
+      "Brewmaster": [],
+      "Mistweaver": [],
+      "Windwalker": []
+    },
+    "Paladin": {
+      "Holy": [],
+      "Protection": [],
+      "Retribution": []
+    },
+    "Priest": {
+      "Discipline": [],
+      "Holy": [],
+      "Shadow": []
     },
     "Rogue": {
       "Assassination": [],
       "Outlaw": [],
       "Subtlety": []
     },
-    "Priest": {
-      "Shadow": []
-    },
-    "Death Knight": {
-      "Unholy": [],
-      "Frost": []
-    },
     "Shaman": {
       "Elemental": [],
-      "Enhancement": []
-    },
-    "Mage": {
-      "Fire": [],
-      "Arcane": [],
-      "Frost": []
+      "Enhancement": [],
+      "Restoration": []
     },
     "Warlock": {
       "Affliction": [],
       "Demonology": [],
       "Destruction": []
     },
-    "Monk": {
-      "Windwalker": []
-    },
-    "Druid": {
-      "Balance": [],
-      "Feral": []
-    },
-    "Demon Hunter": {
-      "Havoc": []
-    },
-    "Evoker": {
-      "Augmentation": [],
-      "Devastation": []
+    "Warrior": {
+      "Arms": [],
+      "Fury": [],
+      "Protection": []
     }
   }
 }
