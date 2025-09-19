@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "update": "node scripts/update-bis.js"
+    "update": "node scripts/update-bis.js",
+    "icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {
     "yaml": "^2.5.0"
