@@ -36,3 +36,12 @@ jobs:
           commit_message: "chore: update BiS feed [skip ci]"
           file_pattern: bis-feed.json bis-feed.js
 
+          - name: Build icons (Blizzard)
+  run: npm run icons
+- name: Commit updated feed & icons
+  uses: stefanzweifel/git-auto-commit-action@v5
+  with:
+    commit_message: "chore: update BiS feed & icons [skip ci]"
+    file_pattern: bis-feed.json bis-feed.js wow-icons.js
+
+
