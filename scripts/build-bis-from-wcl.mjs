@@ -16,6 +16,8 @@ const RAID_ZONE_ID = 44;
 const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 200); 
 // timeframe: "Historical" suele ser más estable
 const TIMEFRAME = process.env.WCL_TIMEFRAME || "LastWeek";
+// Intentar estas dificultades en orden, después de la principal
+const FALLBACK_RAID_DIFFICULTIES = [3, 5];
 
 /* ===========================
     Sistema de log
@@ -304,46 +306,52 @@ async function main() {
   const raidZone = await resolveZoneDetails(RAID_ZONE_ID, token);
   if (raidZone) {
     let foundData = false;
-    log(`Intentando buscar datos de raid en la zona ${raidZone.name} y dificultad ${RAID_DIFFICULTY}...`);
-    for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
-      for (const spec of specs) {
-        const gathered = [];
-        const metric = metricFor(spec);
-        for (const enc of raidZone.encounters) {
-          for (let page=1; page<=TOP_PAGES; page++) {
-            try {
-              const res = await gql(Q_RANKINGS, {
-                encounterId: enc.id,
-                className: cls,
-                specName: spec,
-                page,
-                difficulty: RAID_DIFFICULTY, 
-                metric,
-                timeframe: TIMEFRAME
-              }, token);
-              const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
-              if (rows.length) {
-                gathered.push(...rows);
-                foundData = true;
+    const difficultiesToTry = [RAID_DIFFICULTY, ...FALLBACK_RAID_DIFFICULTIES];
+    
+    for (const difficulty of difficultiesToTry) {
+        log(`Intentando buscar datos de raid en la zona ${raidZone.name} y dificultad ${difficulty}...`);
+        for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
+          for (const spec of specs) {
+            const gathered = [];
+            const metric = metricFor(spec);
+            for (const enc of raidZone.encounters) {
+              for (let page=1; page<=TOP_PAGES; page++) {
+                try {
+                  const res = await gql(Q_RANKINGS, {
+                    encounterId: enc.id,
+                    className: cls,
+                    specName: spec,
+                    page,
+                    difficulty: difficulty, 
+                    metric,
+                    timeframe: TIMEFRAME
+                  }, token);
+                  const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
+                  if (rows.length) {
+                    gathered.push(...rows);
+                    foundData = true;
+                  }
+                } catch(e) {
+                  warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+                }
               }
-            } catch(e) {
-              warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+            }
+            if (gathered.length > 0) {
+              const top = mostUsedItems(gathered, 1);
+              const advanced = getTopItemsBySlot(gathered, gathered.length);
+              data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid(difficulty, raidZone.name))];
+              advancedData[cls][spec] = [...advancedData[cls][spec], ...Object.entries(advanced).map(([slot, items]) => ({ slot, items, source: sourceRaid(difficulty, raidZone.name) }))];
             }
           }
         }
-        if (gathered.length > 0) {
-          const top = mostUsedItems(gathered, 1);
-          const advanced = getTopItemsBySlot(gathered, gathered.length);
-          data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid(RAID_DIFFICULTY, raidZone.name))];
-          advancedData[cls][spec] = [...advancedData[cls][spec], ...Object.entries(advanced).map(([slot, items]) => ({ slot, items, source: sourceRaid(RAID_DIFFICULTY, raidZone.name) }))];
+        if (foundData) {
+            log(`OK: BiS de RAID procesado con dificultad ${difficulty}.`);
+            break; // Salir del bucle de dificultades si se encontraron datos
         }
-      }
     }
-  
-    if (foundData) {
-      log(`OK: BiS de RAID procesado con dificultad ${RAID_DIFFICULTY}.`);
-    } else {
-      warn("No se encontraron datos de RAID en ninguna dificultad. Saltando paso.");
+    
+    if (!foundData) {
+        warn("No se encontraron datos de RAID en ninguna de las dificultades probadas. Saltando paso.");
     }
   } else {
     warn("No se encontró una zona de RAID con el ID especificado. Saltando paso.");
