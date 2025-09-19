@@ -8,12 +8,14 @@ import { URLSearchParams } from "node:url";
 /* ===========================
     Config general (editable)
     =========================== */
-// Dificultades a intentar si no se encuentran datos. El script probará en este orden.
-const RAID_DIFFICULTIES_TO_TRY = [4, 5, 3];
+// Dificultad de banda a procesar (4 = Heroic, 5 = Mythic, 3 = Normal)
+const RAID_DIFFICULTY = 4;
+// ID de la zona de banda a procesar
+const RAID_ZONE_ID = 44; 
 // páginas de rankings a leer por boss (1 página ~100 logs)
-const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 20); 
+const TOP_PAGES = Number(process.env.WCL_TOP_PAGES || 200); 
 // timeframe: "Historical" suele ser más estable
-const TIMEFRAME = process.env.WCL_TIMEFRAME || "Historical";
+const TIMEFRAME = process.env.WCL_TIMEFRAME || "LastWeek";
 
 /* ===========================
     Sistema de log
@@ -136,18 +138,17 @@ const Q_ZONES = `query{
   }
 }`;
 
-async function resolveLatestRaidZone(token) {
+async function resolveZoneDetails(zoneId, token) {
   try {
     const d = await gql(Q_ZONES, {}, token);
     const zones = d?.worldData?.zones || [];
-    const withBosses = zones.filter(z => (z.encounters||[]).length>0 && z.id>1000); // Filtra raids y no mazmorras viejas
-    const latest = withBosses.sort((a,b)=> b.id - a.id)[0];
-    if(latest) {
-      log(`Zona de raid más reciente encontrada: ${latest.name} (ID: ${latest.id})`);
-      return latest;
+    const zone = zones.find(z => z.id === zoneId);
+    if(zone) {
+      log(`Zona encontrada: ${zone.name} (ID: ${zone.id})`);
+      return zone;
     }
   } catch(e) {
-    warn("No pude listar zonas de RAID:", String(e).slice(0,160));
+    warn("No pude obtener detalles de la zona:", String(e).slice(0,160));
   }
   return null;
 }
@@ -156,7 +157,8 @@ async function resolveLatestMPlusZone(token) {
   try {
     const d = await gql(Q_ZONES, {}, token);
     const zones = d?.worldData?.zones || [];
-    const withDungeons = zones.filter(z => (z.encounters||[]).length>0 && z.id<1000); // Filtra mazmorras y no raids
+    // No filtrar por id < 1000 para que funcione con M+ que tengan IDs más altos.
+    const withDungeons = zones.filter(z => (z.encounters||[]).length>0 && z.name.toLowerCase().includes('mythic+ season')); 
     const latest = withDungeons.sort((a,b)=> b.id - a.id)[0];
     if(latest) {
       log(`Zona de Mítica+ más reciente encontrada: ${latest.name} (ID: ${latest.id})`);
@@ -182,29 +184,87 @@ query($encounterId:Int!,$className:String!,$specName:String!,$page:Int!,$difficu
   }
 }`;
 
-// cuenta ocurrencias por slot y devuelve el id más frecuente
-function mostUsedBySlot(entries) {
-  const freq = {}; // slot -> id -> count
+// cuenta ocurrencias y devuelve los más frecuentes
+function mostUsedItems(entries, maxCount = 3) {
+  const itemCounts = {}; // id -> { count: number, slot: string }
   for (const row of entries) {
     const gear = row?.gear || row?.characterGear || [];
-    for (const it of gear) {
-      const slotKey = SLOT_MAP[it.slot] || null;
-      if (!slotKey) continue;
-      const id = Number(it.id);
+    for (const item of gear) {
+      const id = Number(item.id);
       if (!id) continue;
-      (freq[slotKey] ||= {})[id] = (freq[slotKey][id] || 0) + 1;
+      if (!itemCounts[id]) {
+        itemCounts[id] = { count: 0, slot: SLOT_MAP[item.slot] || 'unknown' };
+      }
+      itemCounts[id].count++;
     }
   }
-  const top = {};
-  for (const [slot, ids] of Object.entries(freq)) {
-    let bestId=null, bestCount=-1;
-    for (const [idStr, count] of Object.entries(ids)) {
-      const id = Number(idStr);
-      if (count > bestCount) { bestCount=count; bestId=id; }
+
+  // Ordenar por count y devolver los N principales
+  const sortedItems = Object.entries(itemCounts)
+    .map(([id, data]) => ({ id: Number(id), count: data.count, slot: data.slot }))
+    .sort((a, b) => b.count - a.count);
+
+  return sortedItems.slice(0, maxCount);
+}
+
+// Analiza las combinaciones de abalorios y devuelve las más frecuentes
+function mostUsedTrinketCombos(entries, maxCount = 3) {
+    const comboCounts = {}; // "id1-id2" -> count
+    for (const row of entries) {
+        const gear = row?.gear || row?.characterGear || [];
+        const trinkets = gear.filter(it => it.slot === 'TRINKET_1' || it.slot === 'TRINKET_2')
+                               .map(it => Number(it.id))
+                               .filter(id => id > 0)
+                               .sort((a, b) => a - b); // ordenar para que el orden no importe
+        
+        if (trinkets.length === 2) {
+            const comboKey = `${trinkets[0]}-${trinkets[1]}`;
+            comboCounts[comboKey] = (comboCounts[comboKey] || 0) + 1;
+        }
     }
-    if (bestId) top[slot] = bestId;
-  }
-  return top;
+
+    const sortedCombos = Object.entries(comboCounts)
+        .sort(([, countA], [, countB]) => countB - countA)
+        .slice(0, maxCount)
+        .map(([key, count]) => {
+            const [id1, id2] = key.split('-').map(Number);
+            return { trinket1: id1, trinket2: id2, count };
+        });
+
+    return sortedCombos;
+}
+
+// Cuenta ocurrencias por slot y devuelve los N principales con su porcentaje
+function getTopItemsBySlot(entries, totalEntries, maxItemsPerSlot = 3) {
+    const counts = {}; // slot -> id -> count
+    for (const row of entries) {
+        const gear = row?.gear || row?.characterGear || [];
+        for (const item of gear) {
+            const slotKey = SLOT_MAP[item.slot] || null;
+            if (!slotKey) continue;
+            const id = Number(item.id);
+            if (!id) continue;
+            (counts[slotKey] ||= {})[id] = (counts[slotKey][id] || 0) + 1;
+        }
+    }
+
+    const topItems = {};
+    for (const [slot, itemCounts] of Object.entries(counts)) {
+        const sortedItems = Object.entries(itemCounts)
+            .map(([idStr, count]) => ({ id: Number(idStr), count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, maxItemsPerSlot);
+
+        // Calcular porcentaje de uso
+        const totalSlotEntries = Object.values(itemCounts).reduce((sum, count) => sum + count, 0);
+        const itemsWithPercentage = sortedItems.map(item => ({
+            id: item.id,
+            count: item.count,
+            percentage: totalSlotEntries > 0 ? (item.count / totalSlotEntries) * 100 : 0
+        }));
+        topItems[slot] = itemsWithPercentage;
+    }
+    return topItems;
 }
 
 function itemsFromTop(topPerSlot, tag){
@@ -226,69 +286,67 @@ async function main() {
   }
 
   // Inicializamos la estructura de datos
-  const data = {};
+  const data = {}; // para el archivo bis-feed.js (un solo ítem)
+  const advancedData = {}; // para el archivo avanzado (top 3 ítems)
   const labels = {};
   for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
     labels[cls] = { label: cls, specs: {} };
     data[cls] = {};
+    advancedData[cls] = {};
     for (const spec of specs) {
       labels[cls].specs[spec] = spec;
       data[cls][spec] = [];
+      advancedData[cls][spec] = [];
     }
   }
 
   // === Obtener datos de RAID ===
-  const latestRaid = await resolveLatestRaidZone(token);
-  if (latestRaid) {
+  const raidZone = await resolveZoneDetails(RAID_ZONE_ID, token);
+  if (raidZone) {
     let foundData = false;
-    let raidDifficulty = 0;
-    for (const diff of RAID_DIFFICULTIES_TO_TRY) {
-      log(`Intentando buscar datos de raid en dificultad ${diff}...`);
-      for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
-        for (const spec of specs) {
-          const gathered = [];
-          const metric = metricFor(spec);
-          for (const enc of latestRaid.encounters) {
-            for (let page=1; page<=TOP_PAGES; page++) {
-              try {
-                const res = await gql(Q_RANKINGS, {
-                  encounterId: enc.id,
-                  className: cls,
-                  specName: spec,
-                  page,
-                  difficulty: diff, 
-                  metric,
-                  timeframe: TIMEFRAME
-                }, token);
-                const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
-                if (rows.length) {
-                  gathered.push(...rows);
-                  foundData = true;
-                }
-              } catch(e) {
-                warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
+    log(`Intentando buscar datos de raid en la zona ${raidZone.name} y dificultad ${RAID_DIFFICULTY}...`);
+    for (const [cls, specs] of Object.entries(SPECS_BY_CLASS)) {
+      for (const spec of specs) {
+        const gathered = [];
+        const metric = metricFor(spec);
+        for (const enc of raidZone.encounters) {
+          for (let page=1; page<=TOP_PAGES; page++) {
+            try {
+              const res = await gql(Q_RANKINGS, {
+                encounterId: enc.id,
+                className: cls,
+                specName: spec,
+                page,
+                difficulty: RAID_DIFFICULTY, 
+                metric,
+                timeframe: TIMEFRAME
+              }, token);
+              const rows = res?.worldData?.encounter?.characterRankings?.rankings || [];
+              if (rows.length) {
+                gathered.push(...rows);
+                foundData = true;
               }
+            } catch(e) {
+              warn(`Rankings de RAID fallo ${cls}/${spec} enc ${enc.id} page ${page}:`, String(e).slice(0,160));
             }
           }
-          if (gathered.length > 0) {
-            const top = mostUsedBySlot(gathered);
-            data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid(diff, latestRaid.name))];
-          }
         }
-      }
-      if (foundData) {
-        raidDifficulty = diff;
-        break;
+        if (gathered.length > 0) {
+          const top = mostUsedItems(gathered, 1);
+          const advanced = getTopItemsBySlot(gathered, gathered.length);
+          data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceRaid(RAID_DIFFICULTY, raidZone.name))];
+          advancedData[cls][spec] = [...advancedData[cls][spec], ...Object.entries(advanced).map(([slot, items]) => ({ slot, items, source: sourceRaid(RAID_DIFFICULTY, raidZone.name) }))];
+        }
       }
     }
   
     if (foundData) {
-      log(`OK: BiS de RAID procesado con dificultad ${raidDifficulty}.`);
+      log(`OK: BiS de RAID procesado con dificultad ${RAID_DIFFICULTY}.`);
     } else {
       warn("No se encontraron datos de RAID en ninguna dificultad. Saltando paso.");
     }
   } else {
-    warn("No se encontró una zona de RAID reciente. Saltando paso.");
+    warn("No se encontró una zona de RAID con el ID especificado. Saltando paso.");
   }
 
   // === Obtener datos de MÍTICAS+ ===
@@ -322,8 +380,13 @@ async function main() {
           }
         }
         if (gathered.length > 0) {
-          const top = mostUsedBySlot(gathered);
+          const top = mostUsedItems(gathered, 1);
+          const advanced = getTopItemsBySlot(gathered, gathered.length);
+          const topTrinkets = mostUsedTrinketCombos(gathered);
           data[cls][spec] = [...data[cls][spec], ...itemsFromTop(top, sourceMplus(latestMplus.name))];
+          advancedData[cls][spec] = [...advancedData[cls][spec], ...Object.entries(advanced).map(([slot, items]) => ({ slot, items, source: sourceMplus(latestMplus.name) }))];
+          // Agregar la combinación de abalorios
+          advancedData[cls][spec].push({ slot: 'trinketCombo', items: topTrinkets.map(c => ({ id1: c.trinket1, id2: c.trinket2, count: c.count, percentage: (c.count / gathered.length) * 100 })), source: sourceMplus(latestMplus.name) });
         }
       }
     }
@@ -345,8 +408,16 @@ async function main() {
     data
   };
 
+  const advancedOut = {
+      meta: { season: "Auto (WCL) Avanzado", updated: new Date().toISOString() },
+      labels,
+      data: advancedData
+  };
+
   await fs.writeFile("bis-feed.json", JSON.stringify(out, null, 2), "utf8");
   await fs.writeFile("bis-feed.js", `window.BIS_FEED=${JSON.stringify(out)};`, "utf8");
+  await fs.writeFile("bis-feed-advanced.json", JSON.stringify(advancedOut, null, 2), "utf8");
+  await fs.writeFile("bis-feed-advanced.js", `window.BIS_FEED_ADVANCED=${JSON.stringify(advancedOut)};`, "utf8");
 }
 
 main().finally(() => {
