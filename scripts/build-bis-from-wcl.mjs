@@ -204,6 +204,7 @@ function sourceMplus(zoneName){ return { type:"mplus", instance:`${zoneName} (WC
     Main
     =========================== */
 try {
+  log("Iniciando la generación de BiS desde Warcraft Logs...");
   const token = await getToken();
 
   // Inicializamos la estructura de datos
