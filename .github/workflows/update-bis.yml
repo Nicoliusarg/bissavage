@@ -2,13 +2,13 @@ name: Update BiS feed
 
 on:
   push:
-    branches: [ main ]              # cuando edites YAML o HTML
-  workflow_dispatch:                 # correr a mano
+    branches: [ main ]          # cuando edites YAML/HTML
+  workflow_dispatch:             # correr a mano
   schedule:
-    - cron: "0 */6 * * *"           # cada 6 horas (opcional)
+    - cron: "0 */6 * * *"       # cada 6 horas (opcional)
 
 permissions:
-  contents: write                   # para commitear con GITHUB_TOKEN
+  contents: write               # para commitear con el GITHUB_TOKEN
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
           node-version: 20
 
       - name: Install deps
-        run: npm ci
+        run: npm install
 
       - name: Build bis-feed.json
         run: npm run update
