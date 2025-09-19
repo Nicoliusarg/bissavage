@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BiS por clase/especialización</title>
 
-  <!-- Tooltips Wowhead (para íconos y tooltip de items) -->
+  <!-- Tooltips Wowhead -->
   <script>const whTooltips = { colorLinks:true, iconizeLinks:true, renameLinks:true };</script>
   <script src="https://wow.zamimg.com/widgets/power.js" defer></script>
 
@@ -41,7 +41,7 @@
 <header>
   <div class="wrap">
     <h1>BiS por clase/especialización</h1>
-    <div class="muted">Lee <code>bis-feed.json</code> (estático).</div>
+    <div class="muted">Lee <code>bis-feed.json</code> si existe; si no, usa el feed incrustado.</div>
     <div class="bar">
       <select id="classSelect" aria-label="Elegí clase"></select>
       <select id="specSelect" aria-label="Elegí especialización"></select>
@@ -54,7 +54,7 @@
       <button id="refresh">Recargar</button>
       <span class="muted" id="meta"></span>
     </div>
-    <div class="warn" id="note">Subí <code>bis-feed.json</code> junto a este HTML.</div>
+    <div class="warn" id="note">No se encontró <code>bis-feed.json</code>. Usando el feed incrustado.</div>
     <div class="error" id="err" style="display:none"></div>
   </div>
 </header>
@@ -62,11 +62,36 @@
 <main><div class="grid" id="slots"></div></main>
 <footer><div>Tooltips por Wowhead • HTML + JSON</div></footer>
 
+<!-- FEED INCRUSTADO: edítalo si querés -->
+<script id="bis-feed" type="application/json">
+{
+  "meta": { "season": "TWW S3", "updated": "inline" },
+  "labels": {
+    "Warrior": { "label": "Guerrero", "specs": { "Fury": "Furia" } },
+    "Hunter":  { "label": "Cazador",  "specs": { "Marksmanship": "Puntería" } }
+  },
+  "data": {
+    "Warrior": {
+      "Fury": [
+        { "slot": "twoHand",  "id": 34334,  "source": { "type": "raid",    "instance": "Ejemplo", "boss": "Jefe A" } },
+        { "slot": "trinket1", "id": 211515, "source": { "type": "mplus",   "dungeon": "Mazmorra X" } },
+        { "slot": "ring1",    "id": 178871, "source": { "type": "crafted", "profession": "Joyería" } }
+      ]
+    },
+    "Hunter": {
+      "Marksmanship": [
+        { "slot": "twoHand", "id": 19019,  "source": { "type": "raid",   "instance": "Ejemplo", "boss": "Jefe B" } },
+        { "slot": "trinket2","id": 204202, "source": { "type": "crafted","profession": "Ingeniería" } }
+      ]
+    }
+  }
+}
+</script>
+
 <script>
-const FEED_URL = './bis-feed.json'; // ← archivo JSON al lado del HTML
+const FEED_URL = './bis-feed.json'; // si está online, se usa este. Si falla, usa el inline.
 let DATA=null;
 
-// util
 function el(tag, attrs={}, children=[]){
   const n=document.createElement(tag);
   for(const [k,v] of Object.entries(attrs)){
@@ -157,34 +182,44 @@ function bindFilters(){
 
 function saveState(){ localStorage.setItem('bis_class',currentClass); localStorage.setItem('bis_spec',currentSpec); }
 
-async function loadJSON(){
-  const errBox=document.getElementById('err');
-  try{
-    const res=await fetch(FEED_URL,{cache:'no-store'});
-    if(!res.ok) throw new Error(`HTTP ${res.status} al cargar ${FEED_URL}`);
-    const json=await res.json();
-    if(!json || !json.data) throw new Error("El JSON no tiene la clave 'data'.");
-    json.meta=json.meta||{}; json.meta.updated=json.meta.updated||new Date().toISOString();
-    return json;
-  }catch(e){
-    errBox.style.display='block';
-    errBox.textContent='Error cargando bis-feed.json:\n'+e.message+'\nTip: el archivo debe estar junto al HTML y ser JSON válido.';
-    throw e;
-  }
+async function tryFetchExternal(){
+  const url = './bis-feed.json?v=' + Date.now(); // cache-buster
+  const res = await fetch(url, { cache:'no-store' });
+  if(!res.ok) throw new Error(`HTTP ${res.status} al cargar bis-feed.json`);
+  const json = await res.json();
+  if(!json || !json.data) throw new Error("El JSON externo no tiene la clave 'data'.");
+  return json;
+}
+
+function readInline(){
+  const raw = document.getElementById('bis-feed')?.textContent?.trim();
+  if(!raw) throw new Error('No hay feed incrustado');
+  const json = JSON.parse(raw);
+  json.meta = json.meta || {};
+  json.meta.updated = json.meta.updated || 'inline';
+  return json;
 }
 
 (async function init(){
   bindFilters();
   document.getElementById('refresh').addEventListener('click',()=>location.reload());
+  const errBox=document.getElementById('err');
   try{
-    DATA=await loadJSON();
+    // 1) intento leer el externo
+    DATA = await tryFetchExternal();
     document.getElementById('note').style.display='none';
-  }catch{ // demo mínima si falta el JSON
-    DATA={
-      meta:{season:'TWW S3 (demo)',updated:'local'},
-      labels:{ Warrior:{label:'Guerrero',specs:{Fury:'Furia'}} },
-      data:{ Warrior:{ Fury:[ {slot:'twoHand',id:34334,source:{type:'raid',instance:'Ejemplo',boss:'Jefe A'}} ] } }
-    };
+  }catch(e1){
+    try{
+      // 2) si falla, uso el incrustado
+      DATA = readInline();
+      document.getElementById('note').style.display='block';
+    }catch(e2){
+      errBox.style.display='block';
+      errBox.textContent = 'No pude cargar el feed externo ni el incrustado.\n' +
+                           'Error externo: ' + e1.message + '\n' +
+                           'Error inline: ' + e2.message;
+      return;
+    }
   }
   buildSelects();
   render();
@@ -192,3 +227,4 @@ async function loadJSON(){
 </script>
 </body>
 </html>
+
