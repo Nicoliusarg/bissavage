@@ -1,0 +1,11 @@
+{
+  "name": "bissavage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update": "node scripts/update-bis.js"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  }
+}
