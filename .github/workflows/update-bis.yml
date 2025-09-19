@@ -50,7 +50,7 @@ jobs:
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          # WCL_RAID_ZONE_ID: "99999"   # <- completalo cuando tengas el zoneId
+          WCL_RAID_ZONE_ID: "36"   # <- completalo cuando tengas el zoneId
           WCL_RAID_DIFFICULTY: "4"
           WCL_TOP_PAGES: "1"
           WCL_TIMEFRAME: Historical
