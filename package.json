@@ -7,6 +7,6 @@
     "icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {
-    "yaml": "^2.5.0"
+    "yaml": "^2.4.5"
   }
 }
