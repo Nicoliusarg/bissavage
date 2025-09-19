@@ -1,179 +1,22 @@
-window.BIS_FEED = {
-  "meta": {
-    "season": "TWW S3",
-    "updated": "2025-09-18T18:22:33.773Z"
-  },
+{
+  "meta": { "season": "TWW S3", "updated": "2025-09-18T18:22:33.773Z" },
   "labels": {
-    "Warrior": {
-      "label": "Guerrero",
-      "specs": {
-        "Arms": "Armas",
-        "Fury": "Furia",
-        "Protection": "Protección"
-      }
-    },
-    "Paladin": {
-      "label": "Paladín",
-      "specs": {
-        "Holy": "Sagrado",
-        "Protection": "Protección",
-        "Retribution": "Reprensión"
-      }
-    },
-    "Hunter": {
-      "label": "Cazador",
-      "specs": {
-        "Beast Mastery": "Maestro de Bestias",
-        "Marksmanship": "Puntería",
-        "Survival": "Supervivencia"
-      }
-    },
-    "Rogue": {
-      "label": "Pícaro",
-      "specs": {
-        "Assassination": "Asesinato",
-        "Outlaw": "Forajido",
-        "Subtlety": "Sutileza"
-      }
-    },
-    "Priest": {
-      "label": "Sacerdote",
-      "specs": {
-        "Discipline": "Disciplina",
-        "Holy": "Sagrado",
-        "Shadow": "Sombra"
-      }
-    },
-    "Death Knight": {
-      "label": "Caballero de la Muerte",
-      "specs": {
-        "Blood": "Sangre",
-        "Frost": "Escarcha",
-        "Unholy": "Profano"
-      }
-    },
-    "Shaman": {
-      "label": "Chamán",
-      "specs": {
-        "Elemental": "Elemental",
-        "Enhancement": "Mejora",
-        "Restoration": "Restauración"
-      }
-    },
-    "Mage": {
-      "label": "Mago",
-      "specs": {
-        "Arcane": "Arcano",
-        "Fire": "Fuego",
-        "Frost": "Escarcha"
-      }
-    },
-    "Warlock": {
-      "label": "Brujo",
-      "specs": {
-        "Affliction": "Aflicción",
-        "Demonology": "Demonología",
-        "Destruction": "Destrucción"
-      }
-    },
-    "Monk": {
-      "label": "Monje",
-      "specs": {
-        "Brewmaster": "Maestro Cervecero",
-        "Mistweaver": "Tejedor de Niebla",
-        "Windwalker": "Viajero del Viento"
-      }
-    },
-    "Druid": {
-      "label": "Druida",
-      "specs": {
-        "Balance": "Equilibrio",
-        "Feral": "Feral",
-        "Guardian": "Guardián",
-        "Restoration": "Restauración"
-      }
-    },
-    "Demon Hunter": {
-      "label": "Cazador de Demonios",
-      "specs": {
-        "Havoc": "Devastación",
-        "Vengeance": "Venganza"
-      }
-    },
-    "Evoker": {
-      "label": "Evocador",
-      "specs": {
-        "Devastation": "Devastación",
-        "Preservation": "Preservación",
-        "Augmentation": "Aumentación"
-      }
-    }
+    "Warrior": { "label": "Guerrero", "specs": { "Fury": "Furia" } },
+    "Hunter":  { "label": "Cazador",  "specs": { "Marksmanship": "Puntería" } }
   },
   "data": {
     "Warrior": {
-      "Arms": [],
-      "Fury": [],
-      "Protection": []
-    },
-    "Paladin": {
-      "Holy": [],
-      "Protection": [],
-      "Retribution": []
+      "Fury": [
+        { "slot": "twoHand",  "id": 34334,  "source": { "type": "raid",    "instance": "Ejemplo", "boss": "Jefe A" } },
+        { "slot": "trinket1", "id": 211515, "source": { "type": "mplus",   "dungeon": "Mazmorra X" } },
+        { "slot": "ring1",    "id": 178871, "source": { "type": "crafted", "profession": "Joyería" } }
+      ]
     },
     "Hunter": {
-      "Beast Mastery": [],
-      "Marksmanship": [],
-      "Survival": []
-    },
-    "Rogue": {
-      "Assassination": [],
-      "Outlaw": [],
-      "Subtlety": []
-    },
-    "Priest": {
-      "Discipline": [],
-      "Holy": [],
-      "Shadow": []
-    },
-    "Death Knight": {
-      "Blood": [],
-      "Frost": [],
-      "Unholy": []
-    },
-    "Shaman": {
-      "Elemental": [],
-      "Enhancement": [],
-      "Restoration": []
-    },
-    "Mage": {
-      "Arcane": [],
-      "Fire": [],
-      "Frost": []
-    },
-    "Warlock": {
-      "Affliction": [],
-      "Demonology": [],
-      "Destruction": []
-    },
-    "Monk": {
-      "Brewmaster": [],
-      "Mistweaver": [],
-      "Windwalker": []
-    },
-    "Druid": {
-      "Balance": [],
-      "Feral": [],
-      "Guardian": [],
-      "Restoration": []
-    },
-    "Demon Hunter": {
-      "Havoc": [],
-      "Vengeance": []
-    },
-    "Evoker": {
-      "Devastation": [],
-      "Preservation": [],
-      "Augmentation": []
+      "Marksmanship": [
+        { "slot": "twoHand", "id": 19019,  "source": { "type": "raid",   "instance": "Ejemplo", "boss": "Jefe B" } },
+        { "slot": "trinket2","id": 204202, "source": { "type": "crafted","profession": "Ingeniería" } }
+      ]
     }
   }
-};
+}
