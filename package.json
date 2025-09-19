@@ -1,12 +1,9 @@
 {
-  "name": "bissavage",
-  "private": true,
   "type": "module",
   "scripts": {
+    "auto:wcl": "node scripts/build-bis-from-wcl.mjs",
     "update": "node scripts/update-bis.js",
     "icons": "node scripts/build-icons.mjs"
   },
-  "dependencies": {
-    "yaml": "^2.4.5"
-  }
+  "dependencies": { "yaml": "^2.4.5" }
 }
