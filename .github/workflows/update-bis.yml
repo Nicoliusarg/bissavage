@@ -1,19 +1,15 @@
 name: Update BiS feed
-
 on:
   push:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # cada 6 horas (UTC)
-
+    - cron: "0 */6 * * *"
 permissions:
   contents: write
-
 concurrency:
   group: update-bis
   cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,99 +18,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Install deps
         run: |
           npm ci || npm install --no-fund --no-audit
 
-      # --- DEBUG WCL ZONES (inline, sin archivos externos) ---
-      - name: Debug: dump WCL zones
-        shell: bash
+      - name: Debug WCL zones
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
         run: |
-          node - <<'NODE'
-          const UA="bissavage/1.0 (GitHub Actions)";
-          const Q=`query{ worldData { zones { id name encounters { id name } } } }`;
+          node -e "const UA='bissavage/1.0';(async()=>{try{if(!process.env.WCL_CLIENT_ID||!process.env.WCL_CLIENT_SECRET){console.log('WCL secrets vacíos: salteando');process.exit(0)};const p=new URLSearchParams({grant_type:'client_credentials',client_id:process.env.WCL_CLIENT_ID,client_secret:process.env.WCL_CLIENT_SECRET});const rt=await fetch('https://www.warcraftlogs.com/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA},body:p});const tok=await rt.json();if(!tok.access_token){console.log('No token');process.exit(0)};const q='query{ worldData { zones { id name encounters { id name } } } }';const rq=await fetch('https://www.warcraftlogs.com/api/v2/client',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok.access_token,'User-Agent':UA},body:JSON.stringify({query:q,variables:{}})});const data=await rq.json();const zones=(data?.data?.worldData?.zones||[]).filter(z=>(z.encounters||[]).length>0).sort((a,b)=>b.id-a.id);console.log('=== ZONAS CON BOSSES (zoneId — nombre — #encounters) ===');for(const z of zones){console.log(z.id+' — '+z.name+' — '+z.encounters.length)};console.log('TIP: setea WCL_RAID_ZONE_ID con el id del tier actual.');}catch(e){console.log('debug error:',e.message)}})();"
 
-          async function getToken(){
-            const params = new URLSearchParams({
-              grant_type: "client_credentials",
-              client_id: process.env.WCL_CLIENT_ID,
-              client_secret: process.env.WCL_CLIENT_SECRET
-            });
-            const r = await fetch("https://www.warcraftlogs.com/oauth/token", {
-              method: "POST",
-              headers: {"Content-Type":"application/x-www-form-urlencoded","User-Agent":UA},
-              body: params
-            });
-            const t = await r.text();
-            const j = JSON.parse(t);
-            if(!j.access_token) throw new Error("No WCL token: "+t);
-            return j.access_token;
-          }
-
-          async function gql(q, token){
-            const r = await fetch("https://www.warcraftlogs.com/api/v2/client", {
-              method:"POST",
-              headers:{
-                "Content-Type":"application/json",
-                "Authorization":`Bearer ${token}`,
-                "User-Agent":UA
-              },
-              body: JSON.stringify({query:q, variables:{}})
-            });
-            const txt = await r.text();
-            const j = JSON.parse(txt);
-            if(j.errors) throw new Error(JSON.stringify(j.errors));
-            return j.data;
-          }
-
-          (async ()=>{
-            try{
-              if(!process.env.WCL_CLIENT_ID || !process.env.WCL_CLIENT_SECRET){
-                console.log("WCL secrets vacíos: salteando listado de zonas.");
-                process.exit(0);
-              }
-              const token = await getToken();
-              const d = await gql(Q, token);
-              const zones = (d?.worldData?.zones||[])
-                .filter(z => (z.encounters||[]).length>0)
-                .sort((a,b)=> b.id - a.id);
-              console.log("=== ZONAS CON BOSSES (zoneId — nombre — #encounters) ===");
-              for(const z of zones){
-                console.log(`${z.id} — ${z.name} — ${z.encounters.length}`);
-              }
-              console.log("\nTIP: poné WCL_RAID_ZONE_ID con el id del tier actual y corré de nuevo.");
-              process.exit(0);
-            }catch(e){
-              console.log("Debug WCL zones: "+(e.stack||e));
-              // no fallamos el workflow por debug
-              process.exit(0);
-            }
-          })();
-          NODE
-
-      # --- BUILD DEL FEED DESDE WCL ---
       - name: Build BiS feed automatically (WCL)
         run: "npm run auto:wcl"
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
-          # Cuando veas el zoneId correcto en el paso anterior, descomentá y ponelo:
           # WCL_RAID_ZONE_ID: "99999"
           WCL_RAID_DIFFICULTY: "4"
           WCL_TOP_PAGES: "1"
           WCL_TIMEFRAME: Historical
           WCL_REQ_DELAY_MS: "400"
 
-      # Íconos estáticos (Wowhead CDN)
       - name: Build icons (static, no API)
         run: "npm run icons"
 
@@ -124,7 +53,6 @@ jobs:
           test -f bis-feed.js && echo "bis-feed.js OK"
           test -f wow-icons.js && echo "wow-icons.js OK"
 
-      # Evita non-fast-forward al commitear
       - name: Rebase against latest main
         run: |
           git config user.name "github-actions[bot]"
