@@ -56,9 +56,10 @@ jobs:
       # -------- VALIDACIÓN SIMPLE Y SÓLIDA --------
       - name: Validate feed
         run: |
-          node -e "const fs=require('fs');let ok=true,msg='';try{const s=fs.readFileSync('bis-feed.json','utf8');const j=JSON.parse(s);if(!j||!j.data||!Object.keys(j.data).length){ok=false;msg='Feed vacío o sin data';}}catch(e){ok=false;msg='JSON inválido: '+e.message}if(!ok){console.error(msg);process.exit(1)}else{console.log('Feed OK')}}"
+          node scripts/validate-feed.mjs
           test -f bis-feed.js && echo "bis-feed.js OK"
           test -f wow-icons.js && echo "wow-icons.js OK"
+
 
       - name: Rebase against latest main
         run: |
